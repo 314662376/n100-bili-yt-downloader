@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>N100 下载站</title>
+<style>
+/* 固定暗色：不跟随系统，浅色系统下也是暗色 */
+:root{
+  color-scheme:dark;
+  --bg:#141517; --panel:#1c1e21; --line:#2b2e33; --txt:#e9eaec; --dim:#9aa1ab; --hint:#6f7681;
+  --accent:#6f9cf7; --ok:#4cc38a; --warn:#e0a33a; --err:#f0736f; --track:#2a2d32;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;background:var(--bg);color:var(--txt);
+  font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+body{padding:16px;max-width:1080px;margin:0 auto;padding-bottom:60px}
+header{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+h1{font-size:17px;font-weight:500;margin:0}
+.pill{font-size:12px;color:var(--dim);border:1px solid var(--line);border-radius:999px;
+  padding:2px 9px;background:var(--panel);display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--hint);display:inline-block}
+.dot.ok{background:var(--ok)} .dot.bad{background:var(--err)} .dot.warn{background:var(--warn)}
+.spacer{flex:1}
+.chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--dim);
+  border:1px solid var(--line);border-radius:8px;padding:5px 10px;cursor:pointer;user-select:none}
+.chk input{accent-color:var(--accent);margin:0}
+.chk.disabled{opacity:.45;cursor:not-allowed}
+.plat{display:inline-block;font-size:11px;line-height:1.5;padding:0 6px;border-radius:4px;
+  margin-right:6px;border:1px solid;vertical-align:1px;font-weight:500}
+.plat.bili{color:#fb7299;border-color:#fb729955;background:#fb729915}
+.plat.yt{color:#f0736f;border-color:#f0736f55;background:#f0736f15}
+.plat.dl{color:#4cc38a;border-color:#4cc38a55;background:#4cc38a15}
+button{font:inherit;cursor:pointer;border-radius:8px;border:1px solid var(--line);
+  background:var(--panel);color:var(--txt);padding:6px 12px;transition:border-color .15s,opacity .15s}
+button:hover{border-color:var(--dim)}
+button:disabled{opacity:.45;cursor:not-allowed}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.sm{padding:3px 9px;font-size:12px;border-radius:6px}
+button.danger{color:var(--err)}
+a.linkbtn{font:inherit;cursor:pointer;border-radius:6px;border:1px solid var(--line);
+  background:var(--panel);color:var(--txt);padding:3px 9px;font-size:12px;
+  text-decoration:none;display:inline-block;transition:border-color .15s}
+a.linkbtn:hover{border-color:var(--dim)}
+a.linkbtn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:14px}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start}
+textarea{width:100%;min-height:78px;resize:vertical;border:1px solid var(--line);border-radius:10px;
+  background:var(--bg);color:var(--txt);padding:10px;font:13px/1.6 inherit;outline:none}
+textarea:focus,input:focus,select:focus{border-color:var(--accent)}
+select,input[type=text],input[type=password],input[type=number]{
+  border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--txt);
+  padding:6px 9px;font:13px inherit;outline:none}
+.controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px}
+.hint{color:var(--hint);font-size:12px}
+.tasks{display:flex;flex-direction:column;gap:8px}
+.task{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:11px 13px;
+  display:grid;grid-template-columns:1fr auto;gap:8px 12px;align-items:center}
+.task .t{font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.task .meta{font-size:12px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.task .acts{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.task .full{grid-column:1/-1}
+.bar{height:5px;background:var(--track);border-radius:99px;overflow:hidden}
+.bar > i{display:block;height:100%;width:0;background:var(--accent);border-radius:99px;
+  transition:width .4s ease}
+.bar.done > i{background:var(--ok)}
+.bar.fail > i{background:var(--err)}
+.state{font-size:11px;padding:1px 7px;border-radius:999px;border:1px solid var(--line);color:var(--dim)}
+.state.run{color:var(--accent);border-color:var(--accent)}
+.state.done{color:var(--ok);border-color:var(--ok)}
+.state.err{color:var(--err);border-color:var(--err)}
+.state.warn{color:var(--warn);border-color:var(--warn)}
+.empty{color:var(--hint);font-size:13px;text-align:center;padding:22px 0}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.42);display:none;align-items:center;
+  justify-content:center;padding:16px;z-index:50}
+.modal.show{display:flex}
+.modal .box{background:var(--panel);border-radius:14px;max-width:520px;width:100%;
+  max-height:86vh;overflow:auto;padding:18px;border:1px solid var(--line)}
+.modal h2{font-size:15px;font-weight:500;margin:0 0 12px}
+.field{display:flex;flex-direction:column;gap:5px;margin-bottom:12px}
+.field label{font-size:12px;color:var(--dim)}
+.field .hint{font-size:11px}
+.kv{font-size:12px;color:var(--dim);white-space:pre-wrap;word-break:break-all;
+  background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:9px;margin-top:8px}
+#login{position:fixed;inset:0;background:var(--bg);display:none;align-items:center;
+  justify-content:center;z-index:99;padding:20px}
+#login.show{display:flex}
+
+#login .box{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+  padding:22px;width:100%;max-width:340px;text-align:center}
+#login h2{font-size:15px;font-weight:500;margin:0 0 14px}
+#login input{width:100%;margin-bottom:10px}
+#login button{width:100%}
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--txt);
+  color:var(--bg);padding:8px 16px;border-radius:999px;font-size:13px;opacity:0;
+  transition:opacity .2s;pointer-events:none;z-index:80}
+.toast.show{opacity:.94}
+@media (max-width:620px){
+  body{padding:12px 10px 50px}
+  .task{grid-template-columns:1fr}
+  .task .acts{justify-content:flex-start}
+  .controls button.primary{flex:1}
+}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>N100 下载站</h1>
+  <span class="pill"><span class="dot" id="d-proxy"></span><span id="t-proxy">代理</span></span>
+  <span class="pill"><span class="dot" id="d-pot"></span>PO token</span>
+  <span class="pill" id="t-disk">磁盘</span>
+  <span class="spacer"></span>
+  <a class="linkbtn" href="/n100.user.js" title="Tampermonkey 油猴脚本：在 B 站 / YouTube 视频页直接加下载按钮">油猴脚本</a>
+  <button class="sm" onclick="openSettings()">设置</button>
+</header>
+
+<section class="panel">
+  <textarea id="urls" placeholder="每行一个视频链接，可整段粘贴（YouTube watch / shorts / youtu.be ｜ B 站 video/BVxxx、番剧、b23.tv 短链）"></textarea>
+  <div class="controls">
+    <select id="quality"></select>
+    <label class="chk" id="wrap-parts" title="B 站分P / 合集：勾了会把每一 P 拆成独立任务">
+      <input type="checkbox" id="all_parts"> 整个合集
+    </label>
+    <select id="concurrency" title="同时下载的数量">
+      <option value="1">串行（1 个）</option>
+      <option value="2">并发 2 个</option>
+      <option value="3">并发 3 个</option>
+      <option value="4">并发 4 个</option>
+    </select>
+    <span class="spacer"></span>
+    <span class="hint" id="count"></span>
+    <button class="primary" id="add" onclick="addTasks('queue')"
+      title="N100 后台下载，存到 N100，等你之后点「取回」">加入队列</button>
+    <button id="add-now" onclick="addTasks('direct')"
+      title="N100 优先下载，下完自动推送到这台电脑，N100 上不长期留">直接下到本机</button>
+  </div>
+  <div class="hint" style="margin-top:8px">
+    加入队列 = 存 N100，之后随时取回（可关机）；直接下到本机 = 优先下载、下完自动收到本机，N100 上收完即删
+  </div>
+</section>
+
+<div class="tasks" id="tasks"><div class="empty">还没有任务</div></div>
+
+<div class="modal" id="settings">
+  <div class="box">
+    <h2>设置</h2>
+    <div class="field">
+      <label>代理（容器内访问 N100 的 mihomo）</label>
+      <input type="text" id="s-proxy" placeholder="http://host.docker.internal:7890">
+      <span class="hint">留空表示直连（YouTube 直连不通，一般不要清空）</span>
+    </div>
+    <div class="field">
+      <label>player_client（YouTube 客户端标识）</label>
+      <input type="text" id="s-client" placeholder="web_embedded">
+      <span class="hint">默认 web_embedded；失效时可试 tv 或 web_embedded,tv</span>
+    </div>
+    <div class="field">
+      <label>磁盘最低剩余（GB）</label>
+      <input type="number" id="s-free" min="1" max="200">
+    </div>
+    <div class="field">
+      <label>取回后延时删除（秒）</label>
+      <input type="number" id="s-grace" min="0" max="3600">
+      <span class="hint">浏览器把整个文件收完后开始倒计时，期间可点"撤销"</span>
+    </div>
+    <div class="field">
+      <label>YouTube 登录态 cookies.txt</label>
+      <input type="file" id="s-cookie" accept=".txt">
+      <span class="hint" id="cookie-info">未上传</span>
+    </div>
+    <div class="field">
+      <label>B 站登录态 cookies.txt（SESSDATA）</label>
+      <input type="file" id="s-bili-cookie" accept=".txt">
+      <span class="hint" id="bili-cookie-info">未上传（匿名也能下 1080P，登录后可下部分限制视频）</span>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:4px">
+      <button class="primary" onclick="saveSettings()">保存</button>
+      <button onclick="runDiag()">自检</button>
+      <button onclick="closeSettings()">关闭</button>
+    </div>
+    <div class="kv" id="diag" style="display:none"></div>
+  </div>
+</div>
+
+<div id="login">
+  <div class="box">
+    <h2>输入访问口令</h2>
+    <input type="password" id="pwd" placeholder="口令" onkeydown="if(event.key==='Enter')doLogin()">
+    <button class="primary" onclick="doLogin()">进入</button>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+let DATA = null, ES = null, rows = new Map();
+
+const LABEL = {queued:'排队中', extracting:'解析中', downloading:'下载中', merging:'合并中',
+               done:'已完成', failed:'失败', canceled:'已取消', removed:'已删除'};
+const CLS = {queued:'', extracting:'run', downloading:'run', merging:'warn',
+             done:'done', failed:'err', canceled:'', removed:''};
+
+function fmtB(n){ if(!n) return '0 B';
+  const u=['B','KB','MB','GB','TB']; let i=0, v=n;
+  while(v>=1024 && i<u.length-1){v/=1024;i++}
+  return (v<10? v.toFixed(v<1?2:1) : Math.round(v)) + ' ' + u[i];
+}
+function fmtSpeed(n){ return n? fmtB(n)+'/s' : '—'; }
+function fmtEta(s){ if(s==null||s<0) return '—';
+  s=Math.round(s); const h=Math.floor(s/3600), m=Math.floor(s%3600/60), x=s%60;
+  return h? `${h}:${String(m).padStart(2,'0')}:${String(x).padStart(2,'0')}`
+          : `${m}:${String(x).padStart(2,'0')}`;
+}
+function toast(msg){ const t=$('#toast'); t.textContent=msg; t.classList.add('show');
+  clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove('show'), 2200); }
+
+async function api(path, opt={}){
+  const r = await fetch(path, {credentials:'same-origin', ...opt});
+  if(r.status === 401){ showLogin(); throw new Error('需要登录'); }
+  const ct = r.headers.get('content-type')||'';
+  const body = ct.includes('json')? await r.json() : await r.text();
+  if(!r.ok) throw new Error((body && body.detail) || ('HTTP '+r.status));
+  return body;
+}
+
+function showLogin(){ $('#login').classList.add('show'); }
+async function doLogin(){
+  const p = $('#pwd').value;
+  try{
+    await api('/api/login',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({password:p})});
+    $('#login').classList.remove('show'); $('#pwd').value=''; connect();
+  }catch(e){ toast('口令不对'); }
+}
+
+function connect(){
+  if(ES) ES.close();
+  ES = new EventSource('/api/events');
+  ES.onmessage = ev => { try{ render(JSON.parse(ev.data)); }catch(e){} };
+  ES.onerror = () => { /* 自动重连 */ };
+}
+
+function render(d){
+  DATA = d;
+  const s = d.settings, disk = d.disk;
+  $('#t-disk').textContent = `磁盘剩 ${fmtB(disk.free)}`;
+  $('#d-pot').className = 'dot ' + (d.pot ? 'ok':'bad');
+  const proxyOk = d.tasks.some(t=>t.state==='done') || true;
+  $('#t-proxy').textContent = s.proxy ? '代理已启用' : '直连';
+  $('#t-proxy').title = s.proxy || '不走代理';
+  $('#d-proxy').className = 'dot ' + (s.proxy? 'ok':'warn');
+
+  if(!$('#quality').options.length){
+    fillQualities(d.qualities);
+    $('#quality').value = s.quality;
+    $('#concurrency').value = String(s.concurrency);
+  }
+  syncQuality();
+
+  const box = $('#tasks');
+  if(!d.tasks.length){ box.innerHTML = '<div class="empty">还没有任务</div>'; rows.clear(); return; }
+  if(box.querySelector('.empty')) box.innerHTML = '';
+
+  // 先把已经消失的任务清掉，保证下面的下标定位不被残留节点带偏
+  const alive = new Set(d.tasks.map(t=>t.id));
+  for(const [id, el] of [...rows]){ if(!alive.has(id)){ el.remove(); rows.delete(id); } }
+
+  d.tasks.forEach((t, i)=>{
+    let el = rows.get(t.id);
+    if(!el){ el = buildRow(t); rows.set(t.id, el); }
+    updateRow(el, t);
+    // 按后端顺序（id 倒序，新任务在最上）摆好位置，而不是一新建就追到末尾
+    const ref = box.children[i] || null;
+    if(ref !== el) box.insertBefore(el, ref);
+  });
+}
+
+function buildRow(t){
+  const el = document.createElement('div');
+  el.className = 'task';
+  el.innerHTML = `
+    <div style="min-width:0">
+      <div class="t"></div>
+      <div class="meta"></div>
+    </div>
+    <div class="acts"></div>
+    <div class="full"><div class="bar"><i></i></div></div>
+    <div class="full meta2 meta" style="color:var(--hint)"></div>`;
+  return el;
+}
+
+function updateRow(el, t){
+  const st = LABEL[t.state] || t.state;
+  el.querySelector('.t').textContent = t.title || t.url;
+  const meta = el.querySelector('.meta');
+  const badge = `<span class="state ${CLS[t.state]||''}">${st}</span>`;
+  const pl = t.platform==='bilibili' ? '<span class="plat bili">B站</span>'
+           : t.platform==='youtube' ? '<span class="plat yt">YouTube</span>' : '';
+  const dl = t.mode==='direct' ? '<span class="plat dl">直下</span>' : '';
+  meta.innerHTML = pl + dl + badge + '&nbsp;' + (t.url.length>64? t.url.slice(0,64)+'…' : t.url);
+
+  const bar = el.querySelector('.bar'), fill = el.querySelector('.bar > i');
+  const active = ['extracting','downloading','merging'].includes(t.state);
+  bar.className = 'bar' + (t.state==='done'||t.state==='removed' ? ' done' : t.state==='failed' ? ' fail' : '');
+  fill.style.width = (active||t.state==='done'? (t.pct||0) : t.state==='failed'? Math.max(t.pct||0,100):0) + '%';
+
+  const stats = [];
+  if(t.state==='downloading'){
+    stats.push(`${(t.pct||0).toFixed(1)}%`, `${fmtB(t.done_bytes)} / ${fmtB(t.total_bytes)}`,
+               fmtSpeed(t.speed), `剩余 ${fmtEta(t.eta)}`);
+  }else if(t.state==='merging'){ stats.push('合并音视频中…'); }
+  else if(t.state==='extracting'){ stats.push(t.log || '解析中…'); }
+  else if(t.state==='done' || t.state==='removed'){ stats.push(fmtB(t.size)); }
+  else if(t.state==='failed'){ stats.push(t.error || '失败'); }
+  else if(t.state==='queued'){ stats.push('等待空闲槽位'); }
+  const m2 = el.querySelector('.meta2');
+  m2.textContent = stats.join(' · ');
+  m2.style.color = t.state==='failed' ? 'var(--err)' : 'var(--hint)';
+
+  const acts = el.querySelector('.acts');
+  const key = t.state + '|' + (t.delete_at ? 'd' : '') + '|' + (t.mode||'');
+  if(acts._key !== key){
+    acts._key = key;
+    acts.innerHTML = '';
+    const btn = (text, fn, cls='sm') => {
+      const b = document.createElement('button'); b.className = cls; b.textContent = text;
+      b.onclick = fn; acts.appendChild(b); return b;
+    };
+    // 预览一律走新窗口：<a target=_blank> 不会被弹窗拦截，中键也能开
+    const link = (text, href, primary) => {
+      const a = document.createElement('a');
+      a.className = 'linkbtn' + (primary ? ' primary' : '');
+      a.href = href; a.target = '_blank'; a.rel = 'noopener';
+      a.textContent = text; acts.appendChild(a); return a;
+    };
+
+    if(['queued','extracting','downloading','merging'].includes(t.state)){
+      btn('取消', ()=>act(`/api/tasks/${t.id}/cancel`, 'POST'));
+      btn('删除', ()=>delTask(t.id), 'sm danger');
+    }else if(t.delete_at && t.state==='done'){
+      const s = document.createElement('span');
+      s.className = 'state warn cd';
+      acts.appendChild(s);
+      link('预览', `/watch/${t.id}`);
+      btn('撤销', ()=>act(`/api/tasks/${t.id}/keep`, 'POST'));
+      btn('删除', ()=>delTask(t.id), 'sm danger');
+    }else if(t.state==='done'){
+      link('预览', `/watch/${t.id}`, true);
+      btn(t.mode==='direct' ? '保存到本机' : '取回', ()=>download(t.id));
+      btn('删除', ()=>delTask(t.id), 'sm danger');
+    }else{
+      btn('重试', ()=>act(`/api/tasks/${t.id}/retry`, 'POST'));
+      btn('删除', ()=>delTask(t.id), 'sm danger');
+    }
+  }
+  const cd = acts.querySelector('.cd');
+  if(cd) cd.textContent = `已取回 · ${t.left}s 后删`;
+
+  // 直下任务：从"进行中"变成 done 的那一刻自动推送到本机。
+  // 首次渲染（刚打开页面）不触发，免得一刷新就把历史文件全拉一遍。
+  if(el._state && el._state !== 'done' && t.state === 'done' && t.mode === 'direct'
+     && !t.delete_at){
+    toast('已下好，正在存到本机：' + (t.title || ''));
+    setTimeout(()=>download(t.id), 400);
+  }
+  el._state = t.state;
+}
+
+/* 取回：用隐藏 <a download> 触发，不把当前页面导航走（SSE 连接不会断） */
+function download(id){
+  const a = document.createElement('a');
+  a.href = `/api/file/${id}`;
+  a.setAttribute('download', '');
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+/* 预览：新开浏览器窗口，走独立页面 /watch/<id>（原生播放器，可拖进度、可另存） */
+function openWatch(id){ window.open(`/watch/${id}`, '_blank'); }
+
+async function act(path, method){
+  try{ await api(path,{method}); }catch(e){ toast(e.message); }
+}
+async function delTask(id){
+  if(!confirm('删除 N100 上的任务和文件？（不下载到本地，删了没得恢复）')) return;
+  try{ await api(`/api/tasks/${id}`,{method:'DELETE'}); }catch(e){ toast(e.message); }
+}
+
+/* ── 平台识别：决定画质选项和「整个合集」能不能勾 ── */
+function platOf(u){
+  const h = (()=>{ try{ return new URL(u).hostname.toLowerCase(); }catch(e){ return ''; } })();
+  if(/(^|\.)(bilibili\.com|bilibili\.tv|b23\.tv|acg\.tv)$/.test(h)) return 'bilibili';
+  if(/(^|\.)youtube\.com$/.test(h) || h==='youtu.be') return 'youtube';
+  return 'other';
+}
+function pastedUrls(){ return $('#urls').value.split(/\s+/).filter(x=>x.startsWith('http')); }
+function fillQualities(list){
+  const sel = $('#quality'), keep = sel.value;
+  sel.innerHTML = '';
+  list.forEach(q=>{
+    const o = document.createElement('option'); o.value = q.key; o.textContent = q.label;
+    sel.appendChild(o);
+  });
+  if([...sel.options].some(o=>o.value===keep)) sel.value = keep;
+}
+let _lastQMode = '';
+function syncQuality(){
+  if(!DATA || !DATA.qualities) return;
+  const plats = new Set(pastedUrls().map(platOf));
+  const onlyBili = plats.size===1 && plats.has('bilibili');
+  const mode = onlyBili ? 'bili' : 'yt';
+  if(mode !== _lastQMode){
+    fillQualities(onlyBili ? DATA.bili_qualities : DATA.qualities);
+    if(!$('#quality').value) $('#quality').value = 'best';
+    _lastQMode = mode;
+  }
+  const hasBili = plats.has('bilibili');
+  $('#wrap-parts').classList.toggle('disabled', !hasBili);
+  $('#all_parts').disabled = !hasBili;
+  if(!hasBili) $('#all_parts').checked = false;
+}
+
+async function addTasks(mode='queue'){
+  const urls = $('#urls').value.trim();
+  if(!urls){ toast('先粘贴链接'); return; }
+  const direct = mode === 'direct';
+  const btn = direct ? $('#add-now') : $('#add');
+  btn.disabled = true;
+  try{
+    const r = await api('/api/tasks',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({urls, quality:$('#quality').value, mode,
+                           all_parts: $('#all_parts').checked && !$('#all_parts').disabled})});
+    const dup = r.added.filter(x=>x.dup).length;
+    if(direct){
+      // 已在列表里且早就下完的（重复链接），直接推给浏览器，不用等
+      r.added.filter(x=>x.dup && x.state==='done').forEach(x=>download(x.id));
+      toast(r.added.length > 1
+        ? `直下 ${r.added.length} 个，下完依次存到本机（浏览器可能要你允许多文件下载）`
+        : `直下 1 个，下完自动存到本机`);
+    }else{
+      toast(`已加入 ${r.added.length-dup} 个任务` + (dup? `（${dup} 个重复已跳过）`:''));
+    }
+    if(r.warnings && r.warnings.length) r.warnings.forEach(w=>toast(w));
+    $('#urls').value = ''; updateCount(); syncQuality();
+  }catch(e){ toast(e.message); }
+  finally{ btn.disabled = false; }
+}
+
+function updateCount(){
+  const n = pastedUrls().length;
+  $('#count').textContent = n? `${n} 个链接` : '';
+}
+
+function openSettings(){
+  const s = DATA.settings;
+  $('#s-proxy').value = s.proxy || '';
+  $('#s-client').value = s.player_client || 'web_embedded';
+  $('#s-free').value = s.min_free_gb;
+  $('#s-grace').value = s.delete_grace_sec;
+  const c = DATA.cookies;
+  $('#cookie-info').textContent = c.exists
+    ? `已上传 ${fmtB(c.size)}，更新于 ${new Date(c.mtime*1000).toLocaleString()}`
+    : '未上传（YouTube 大概率要求验证）';
+  const cb = DATA.bili_cookies || {};
+  $('#bili-cookie-info').textContent = cb.exists
+    ? `已上传 ${fmtB(cb.size)}，更新于 ${new Date(cb.mtime*1000).toLocaleString()}`
+    : '未上传（匿名也能下 1080P，登录后可下部分限制视频）';
+  $('#diag').style.display='none';
+  $('#settings').classList.add('show');
+}
+function closeSettings(){ $('#settings').classList.remove('show'); }
+document.addEventListener('keydown', e=>{
+  if(e.key === 'Escape' && $('#settings').classList.contains('show')) closeSettings();
+});
+
+async function saveSettings(){
+  const body = {proxy:$('#s-proxy').value.trim(), player_client:$('#s-client').value.trim(),
+                min_free_gb:+$('#s-free').value, delete_grace_sec:+$('#s-grace').value};
+  const f = $('#s-cookie').files[0];
+  const fb = $('#s-bili-cookie').files[0];
+  try{
+    await api('/api/settings',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify(body)});
+    const msgs = [];
+    if(f){
+      const fd = new FormData(); fd.append('file', f);
+      const r = await api('/api/cookies',{method:'POST',body:fd});
+      msgs.push(`YouTube cookies ${r.lines} 行`);
+      $('#s-cookie').value = '';
+    }
+    if(fb){
+      const fdb = new FormData(); fdb.append('file', fb);
+      const r = await api('/api/cookies?target=bilibili',{method:'POST',body:fdb});
+      msgs.push(`B 站 cookies ${r.lines} 行`);
+      $('#s-bili-cookie').value = '';
+    }
+    toast(msgs.length? '已更新：' + msgs.join('，') : '已保存');
+  }catch(e){ toast(e.message); }
+}
+
+async function runDiag(){
+  const el = $('#diag'); el.style.display='block'; el.textContent='检测中…（最多 25 秒）';
+  try{
+    const d = await api('/api/diag',{method:'POST'});
+    el.textContent =
+`node     ${d.node.exists?'OK':'缺失'}  ${d.node.path}
+ffmpeg   ${d.ffmpeg.exists?'OK':'缺失'}  ${d.ffmpeg.path}
+PO token ${d.pot?'OK':'不可用'}
+cookies  ${d.cookies?'已上传':'未上传'}
+代理     ${d.proxy}
+YouTube  ${d.youtube.status? 'HTTP '+d.youtube.status+' · '+d.youtube.ms+'ms' : '不通 · '+(d.youtube.error||'')}
+出口     ${d.exit}`;
+  }catch(e){ el.textContent = '自检失败：' + e.message; }
+}
+
+$('#urls').addEventListener('input', ()=>{ updateCount(); syncQuality(); });
+$('#concurrency').addEventListener('change', async e=>{
+  try{ await api('/api/settings',{method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({concurrency:+e.target.value})}); toast('并发已改为 '+e.target.value);
+  }catch(err){ toast(err.message); }
+});
+$('#pwd').addEventListener('keydown', e=>{ if(e.key==='Enter') doLogin(); });
+
+(async function boot(){
+  try{
+    // ?play=<id> 直接跳到某个任务的预览窗口（方便把链接发到手机上看）
+    const want = new URLSearchParams(location.search).get('play');
+    if(want){ location.replace('/watch/' + encodeURIComponent(want)); return; }
+    const d = await api('/api/state');
+    render(d); connect();
+  }catch(e){ if(e.message!=='需要登录') toast(e.message); }
+})();
+</script>
+</body>
+</html>

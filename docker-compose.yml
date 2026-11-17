@@ -1,0 +1,40 @@
+name: ytdl
+
+services:
+  app:
+    build: .
+    image: ytdl-app:local
+    container_name: ytdl-app
+    restart: unless-stopped
+    ports:
+      - "8300:8300"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      DATA_DIR: /data
+      # 留空 = 不需要口令，打开即用（仅在可信局域网内这样配）
+      APP_PASSWORD: ""
+      YTDL_PROXY: http://host.docker.internal:7890
+      POT_URL: http://pot:4416
+      TZ: Asia/Shanghai
+    volumes:
+      - ./data:/data
+    depends_on:
+      - pot
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  pot:
+    image: brainicism/bgutil-ytdlp-pot-provider:latest
+    container_name: ytdl-pot
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"

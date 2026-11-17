@@ -1,0 +1,7 @@
+# 统一用 LF，避免 Windows 上编辑后提交、在 Linux 容器里跑出 CRLF 问题
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary
+*.zip binary

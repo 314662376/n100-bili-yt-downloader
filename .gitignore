@@ -1,0 +1,38 @@
+# 运行时数据（N100 上生成，含登录 cookie / 任务库 / 下载文件，绝对不能进仓库）
+data/
+downloads/
+
+# cookie 文件：YouTube 与 B 站的登录态
+cookies.txt
+cookies*.txt
+*bili*cookies*.txt
+
+# 数据库
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# 配置（可能含口令 / 代理地址）
+.env
+settings.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 日志与临时文件
+*.log
+*.part
+*.tmp
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# 只对作者本机有意义的私有脚本（写的是本机导航页的布局）
+_add_nav.py

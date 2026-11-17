@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>预览</title>
+<style>
+:root{
+  color-scheme:dark;
+  --bg:#0b0c0e; --panel:#1c1e21; --line:#2b2e33; --txt:#e9eaec; --dim:#9aa1ab; --hint:#6f7681;
+  --accent:#6f9cf7; --ok:#4cc38a; --err:#f0736f; --warn:#e0a33a;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);
+  font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+body{display:flex;flex-direction:column}
+.head{display:flex;align-items:center;gap:8px;padding:10px 14px;flex-wrap:wrap;
+  border-bottom:1px solid var(--line);background:var(--panel)}
+.t{font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  max-width:46vw;flex:0 1 auto}
+.m{font-size:11px;color:var(--hint);white-space:nowrap}
+.sp{flex:1}
+a.btn,button{font:inherit;cursor:pointer;border-radius:8px;border:1px solid var(--line);
+  background:var(--bg);color:var(--txt);padding:5px 12px;text-decoration:none;white-space:nowrap;
+  transition:border-color .15s}
+a.btn:hover,button:hover{border-color:var(--dim)}
+a.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.danger{color:var(--err)}
+.body{flex:1;display:flex;align-items:center;justify-content:center;padding:12px;min-height:0}
+.body video{max-width:100%;max-height:100%;background:#000;border-radius:8px;outline:none}
+.body audio{width:min(560px,100%)}
+.foot{padding:8px 14px 14px;font-size:11px;color:var(--hint);text-align:center}
+.msg{padding:40px 16px;text-align:center;color:var(--hint)}
+@media (max-width:640px){
+  .t{max-width:100%;order:3;flex-basis:100%}
+  .sp{display:none}
+}
+</style>
+</head>
+<body>
+<div class="head">
+  <span class="t" id="t">加载中…</span>
+  <span class="m" id="m"></span>
+  <span class="sp"></span>
+  <a class="btn primary" id="dl" href="#" style="display:none">保存到本机</a>
+  <button class="danger" id="del" style="display:none">删除</button>
+  <a class="btn" href="/">返回列表</a>
+</div>
+<div class="body" id="body"><div class="msg">加载中…</div></div>
+<div class="foot" id="foot">这是独立预览窗口，看多少遍都不会删文件</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const TID = (location.pathname.match(/\/watch\/(\d+)/) || [])[1];
+const MIME = {mp4:'video/mp4', m4v:'video/mp4', webm:'video/webm', mkv:'video/x-matroska',
+              mov:'video/quicktime', mp3:'audio/mpeg', m4a:'audio/mp4', aac:'audio/aac',
+              opus:'audio/ogg', ogg:'audio/ogg', flac:'audio/flac', wav:'audio/wav'};
+let LAST = null, TIMER = null, PREV = null, MOUNTED = false;
+
+function fmtB(n){ if(!n) return '0 B';
+  const u=['B','KB','MB','GB','TB']; let i=0, v=n;
+  while(v>=1024 && i<u.length-1){v/=1024;i++}
+  return (v<10? v.toFixed(v<1?2:1) : Math.round(v)) + ' ' + u[i];
+}
+
+async function getTask(){
+  const r = await fetch('/api/task/' + TID, {credentials:'same-origin'});
+  if(r.status === 401){ location.href = '/'; throw new Error('需要登录'); }
+  const b = await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(b.detail || ('HTTP ' + r.status));
+  return b;
+}
+
+function head(t){
+  $('#t').textContent = t.title || t.url;
+  document.title = (t.title || '预览') + ' · N100';
+  const ext = (t.ext || '').replace('.','').toUpperCase();
+  const bits = [fmtB(t.size), ext].filter(Boolean);
+  if(t.delete_at) bits.push(`已取回 · ${t.left}s 后删`);
+  $('#m').textContent = bits.join(' · ');
+}
+
+function pay(t){
+  const dl = $('#dl'), del = $('#del');
+  if(t.state === 'done' && t.file !== '' && !t.delete_at){
+    dl.style.display = ''; dl.href = '/api/file/' + TID; dl.setAttribute('download','');
+    del.style.display = ''; del.onclick = removeTask;
+    $('#foot').textContent = '点「保存到本机」把文件收到自己电脑上；收完后 N100 会在倒计时结束后删掉它';
+  }else{
+    dl.style.display = 'none'; del.style.display = 'none';
+  }
+}
+
+function mount(t){
+  const body = $('#body');
+  body.innerHTML = '';
+  const el = document.createElement(t.kind === 'audio' ? 'audio' : 'video');
+  el.id = 'media';
+  el.setAttribute('controls','');
+  el.setAttribute('preload','metadata');
+  if(t.kind !== 'audio') el.setAttribute('playsinline','');
+  el.setAttribute('src', '/api/preview/' + TID);
+  body.appendChild(el);
+
+  const mime = MIME[(t.ext||'').replace('.','').toLowerCase()] || '';
+  const can = !mime || !!el.canPlayType(mime);
+  if(!can){
+    $('#foot').textContent = `这个浏览器可能不支持 ${(t.ext||'').replace('.','').toUpperCase()} 编码，播不了就点「保存到本机」用本地播放器看`;
+  }
+  const p = el.play(); if(p && p.catch) p.catch(()=>{});
+}
+
+async function removeTask(){
+  if(!confirm('删除 N100 上的这个文件？（不下载到本地，删了就没得恢复了）')) return;
+  try{
+    const r = await fetch('/api/tasks/' + TID, {method:'DELETE', credentials:'same-origin'});
+    if(!r.ok) throw new Error((await r.json().catch(()=>({}))).detail || ('HTTP ' + r.status));
+    const m = $('#media');
+    if(m){ try{ m.pause(); }catch(e){} m.removeAttribute('src'); try{ m.load(); }catch(e){} }
+    $('#body').innerHTML = '<div class="msg">已在 N100 上删除</div>';
+    $('#m').textContent = ''; $('#dl').style.display = 'none'; $('#del').style.display = 'none';
+  }catch(e){ alert(e.message); }
+}
+
+function why(t){
+  if(t.state === 'removed') return '文件已从 N100 删除了';
+  if(t.state === 'failed') return '这个任务失败了：<br>' + (t.error || '原因不明');
+  if(t.state === 'canceled') return '任务已取消';
+  if(t.state === 'done') return '文件不在了';
+  const pct = (t.pct || 0).toFixed(0);
+  return `还在 N100 上下载（${pct}%），这里会自动刷新`;
+}
+
+async function tick(){
+  try{
+    const t = await getTask();
+    head(t); pay(t);
+    if(!MOUNTED){
+      MOUNTED = true;
+      if(t.state === 'done' && t.file) mount(t);
+      else $('#body').innerHTML = '<div class="msg">' + why(t) + '</div>';
+    }
+    if(PREV && PREV.state !== 'removed' && t.state === 'removed'){
+      const m = $('#media');
+      if(m){ try{ m.pause(); }catch(e){} m.removeAttribute('src'); try{ m.load(); }catch(e){} }
+      $('#body').innerHTML = '<div class="msg">文件已从 N100 删除</div>';
+      clearInterval(TIMER);
+    }
+    // 打开时还在下载，下完了自动挂上播放器
+    if(PREV && PREV.state !== 'done' && t.state === 'done' && t.file && !$('#media')){
+      $('#body').innerHTML = '';
+      mount(t);
+    }
+    PREV = t;
+  }catch(e){
+    $('#body').innerHTML = '<div class="msg">' + e.message + '<br><br><a class="btn" href="/">返回列表</a></div>';
+    $('#t').textContent = '打不开';
+    clearInterval(TIMER);
+  }
+}
+
+tick();
+TIMER = setInterval(tick, 3000);
+</script>
+</body>
+</html>
