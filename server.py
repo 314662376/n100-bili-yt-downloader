@@ -69,6 +69,18 @@ BILI_COOKIE_FILE = DATA_DIR / 'bilibili_cookies.txt'
 BILI_HOSTS = ('bilibili.com', 'bilibili.tv', 'b23.tv', 'acg.tv')
 BILI_MAX_HEIGHT = 1080
 
+# X（原 Twitter）：
+#  - 必须走代理，容器直连 x.com 是 000，走 mihomo 才是 200
+#  - 登录态单独一份，别和 YouTube 的 cookies.txt 混用：yt-dlp 会每 24h 刷新并重写
+#    YouTube 的 cookie 文件，X 的登录态混在里面会被整个冲掉
+#  - 公开推文匿名就能取（实测 x.com/jack/status/20 能正常解析），
+#    但敏感内容/私密账号/被风控时需要登录态兜底，所以文件仍然保留
+TW_COOKIE_FILE = DATA_DIR / 'twitter_cookies.txt'
+TW_HOSTS = ('x.com', 'twitter.com', 'mobile.twitter.com', 't.co')
+# 油猴脚本在页面里抓到的是 X 的媒体 CDN 直链（video.twimg.com/.../vid/avc1/1080x1920/xx.mp4）。
+# 这类直链是公开的、不需要登录态，把它当 twitter 处理：不走高度过滤、直接取整份文件。
+TW_CDN_HOSTS = ('video.twimg.com',)
+
 
 def platform_of(url: str) -> str:
     """按域名判平台，不看路径——番剧/分P/短链的路径形态太多，域名最稳。"""
@@ -80,7 +92,32 @@ def platform_of(url: str) -> str:
         return 'bilibili'
     if host == 'youtu.be' or host.endswith('youtube.com'):
         return 'youtube'
+    if any(host == h or host.endswith('.' + h) for h in TW_HOSTS):
+        return 'twitter'
+    if any(host == h or host.endswith('.' + h) for h in TW_CDN_HOSTS):
+        return 'twitter'
     return 'other'
+
+
+def safe_name(s: str, limit: int = 120) -> str:
+    """把前端给的"文件名提示"洗成能落盘的字符串。
+
+    Windows→N100 的链路两头都可能挑刺：/ \\ : * ? " < > | 一律换掉，
+    控制字符去掉，末尾的点和空格去掉（Windows 上非法），超长按字符截断。
+    """
+    s = re.sub(r'[\x00-\x1f\x7f]', ' ', str(s or ''))
+    s = re.sub(r'[\\/:*?"<>|]', '-', s)
+    s = re.sub(r'\s+', ' ', s).strip(' .')
+    return s[:limit] or 'video'
+
+
+def is_tw_cdn(url: str) -> bool:
+    """是不是 X 媒体 CDN 直链（页面里抓来的那种，不需要任何接口探测）。"""
+    try:
+        host = (urlsplit(url).hostname or '').lower()
+    except ValueError:
+        return False
+    return any(host == h or host.endswith('.' + h) for h in TW_CDN_HOSTS)
 
 
 def plan(platform: str, quality: str) -> tuple[int, str, bool]:
@@ -95,6 +132,11 @@ def plan(platform: str, quality: str) -> tuple[int, str, bool]:
         h = min(height or BILI_MAX_HEIGHT, BILI_MAX_HEIGHT)
         suffix = '' if quality in ('best', '4k') else f'_{h}p'
         return h, suffix, False
+    if platform == 'twitter':
+        # X 的可选档位本来就少，而且竖屏视频的 height 是「长边」（1080×1920 记成 height=1920），
+        # 用 height<=N 过滤会把高清全滤掉——实测 1080P 竖屏被降到 480×852。
+        # 所以不做高度过滤，直接取最高码率那一档（竖屏 1080P 也就 80MB 上下，不值得为省体积降画质）。
+        return 0, '', False
     return height, suffix, False
 
 DEFAULTS = {
@@ -171,7 +213,10 @@ CREATE TABLE IF NOT EXISTS tasks (
   delete_at    INTEGER NOT NULL DEFAULT 0,
   platform     TEXT    NOT NULL DEFAULT '',
   all_parts    INTEGER NOT NULL DEFAULT 0,
-  mode         TEXT    NOT NULL DEFAULT 'queue'
+  mode         TEXT    NOT NULL DEFAULT 'queue',
+  part_index   INTEGER NOT NULL DEFAULT 0,
+  name_hint    TEXT    NOT NULL DEFAULT '',
+  referer      TEXT    NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_state ON tasks(state);
 """
@@ -181,6 +226,11 @@ MIGRATIONS = (
     ("platform", "ALTER TABLE tasks ADD COLUMN platform TEXT NOT NULL DEFAULT ''"),
     ("all_parts", "ALTER TABLE tasks ADD COLUMN all_parts INTEGER NOT NULL DEFAULT 0"),
     ("mode", "ALTER TABLE tasks ADD COLUMN mode TEXT NOT NULL DEFAULT 'queue'"),
+    ("part_index", "ALTER TABLE tasks ADD COLUMN part_index INTEGER NOT NULL DEFAULT 0"),
+    # 油猴脚本直传 X 媒体直链时，CDN 上只有一个随机文件名（oWohfiQdHBKfiUHX.mp4），
+    # 所以由前端把「作者 + 正文 + 推文 ID」当文件名提示带过来，服务端照抄
+    ("name_hint", "ALTER TABLE tasks ADD COLUMN name_hint TEXT NOT NULL DEFAULT ''"),
+    ("referer", "ALTER TABLE tasks ADD COLUMN referer TEXT NOT NULL DEFAULT ''"),
 )
 
 
@@ -208,14 +258,16 @@ class DB:
             self._con.commit()
 
     def add(self, url: str, quality: str, platform: str = '', all_parts: bool = False,
-            mode: str = 'queue') -> int:
+            mode: str = 'queue', part_index: int = 0, name_hint: str = '',
+            referer: str = '') -> int:
         with self._lock:
             cur = self._con.execute(
-                'INSERT INTO tasks(url, quality, state, created_at, platform, all_parts, mode) '
-                'VALUES(?,?,?,?,?,?,?)',
+                'INSERT INTO tasks(url, quality, state, created_at, platform, all_parts, mode, '
+                'part_index, name_hint, referer) VALUES(?,?,?,?,?,?,?,?,?,?)',
                 (url, quality, 'queued', int(time.time()),
                  platform or platform_of(url), 1 if all_parts else 0,
-                 'direct' if mode == 'direct' else 'queue'))
+                 'direct' if mode == 'direct' else 'queue', int(part_index or 0),
+                 (name_hint or '')[:160], (referer or '')[:300]))
             self._con.commit()
             return int(cur.lastrowid)
 
@@ -315,6 +367,17 @@ def human_err(msg: str) -> str:
     low = msg.lower()
     if 'sign in to confirm' in low or 'not a bot' in low or 'login_required' in low:
         return 'YouTube 要求验证：登录态(cookies)过期或被判机器人，请到设置里重新上传 cookies'
+    if 'no video could be found' in low:
+        return '这条推文里没有可下载的视频（纯文字/纯图片）；如果页面明明有视频，就是内容被限制、匿名读不到，需要上传 X 的 cookies'
+    # X 的报错五花八门，这几种本质都是"匿名接口不给看了"，要引导去补登录态
+    if 'authorization: denied' in low or 'failed to parse json' in low or 'guest token' in low:
+        return 'X 的匿名接口被风控拦了：补一份 X 的 cookies，或者换个代理节点再试'
+    if 'nsfw' in low or 'not authorized' in low or 'age-restricted' in low:
+        return '该内容需要 X 登录态（敏感内容 / 私密账号 / 地区限制）'
+    if '429' in low or 'rate limit' in low or 'too many requests' in low:
+        return '被限流（429）：等几分钟再试，或者换一个代理节点'
+    if 'tweet' in low and ('deleted' in low or 'not found' in low):
+        return '推文已删除或不可见'
     if 'ffmpeg' in low and 'not found' in low:
         return 'ffmpeg 不可用，镜像里缺少 ffmpeg'
     if 'unable to download' in low and 'ejs' in low:
@@ -329,6 +392,8 @@ def human_err(msg: str) -> str:
         return 'B 站返回 404：视频已删除/地区限制/需要大会员'
     if 'premium' in low or '大会员' in msg or 'vip' in low:
         return '该视频的最高清晰度需要大会员，已按非会员最高档（1080P）处理'
+    if 'unexpected_eof' in low or 'ssl' in low or 'connection reset' in low:
+        return '代理连接被中断（SSL/连接重置）：点「重试」就行，反复出现就换个代理节点'
     if 'timed out' in low or 'timeout' in low:
         return '网络超时：代理节点不稳定，换个节点或降低并发'
     return msg.strip().splitlines()[-1][:280] if msg.strip() else '下载失败'
@@ -392,12 +457,22 @@ class Engine:
         self.cancel.add(tid)
 
     # ---------- 参数 ----------
-    def _opts(self, tid: int, url: str, quality: str, all_parts: bool = False) -> dict:
+    def _opts(self, tid: int, url: str, quality: str, all_parts: bool = False,
+              part_index: int = 0, name_hint: str = '', referer: str = '') -> dict:
         s = load_settings()
         plat = platform_of(url)
         height, suffix, is_audio = plan(plat, quality)
+        if plat == 'twitter' and part_index:
+            # 一条推文多段媒体：靠 playlist_items 精确挑第 N 段，文件名加后缀区分，
+            # 不然后面几段的文件名会和第一段撞在一起（推文标题是同一句话）
+            suffix += f'_p{part_index}'
         if is_audio:
             fmt, sort = 'ba[ext=m4a]/ba/b', None
+        elif plat == 'twitter':
+            # 见 plan()：竖屏视频的 height 是长边，加 height 过滤会把 1080P 滤成 480P，
+            # 这里直接用 b（音视频合成的最高码率档），不叠任何高度限制
+            fmt = 'b'
+            sort = None
         elif plat == 'bilibili':
             # 用 format 过滤硬压高度，而不是只靠排序：万一是大会员账号，
             # API 会吐出 4K/HDR，排序压不住。这里直接把 >1080 的全滤掉。
@@ -421,6 +496,8 @@ class Engine:
             'continuedl': True,
             'retries': 12,
             'fragment_retries': 12,
+            # 走代理时偶发 SSL 中断，解析阶段也多给几次（默认 3 次不够稳）
+            'extractor_retries': 3,
             'concurrent_fragment_downloads': 4,
             'socket_timeout': 30,
             'ffmpeg_location': FFMPEG_DIR,
@@ -440,8 +517,32 @@ class Engine:
             opts['noplaylist'] = not all_parts
             if not all_parts:
                 opts['playlist_items'] = '1'
+        elif plat == 'twitter':
+            if TW_STATUS_RE.search(url):
+                # 多段媒体在提交时已经拆成独立任务，所以一个任务永远只允许落一个文件。
+                # 探测失败（网络抖动）时也不会一口气吐出好几个文件把取回逻辑搞乱。
+                opts['noplaylist'] = False
+                opts['playlist_items'] = str(part_index) if part_index else '1'
+                # 推文正文当标题：中文 280 字约 840 字节，直接超过文件名 255 字节上限，
+                # 会报 [Errno 36] File name too long。截断到 40 字 + 推文 ID 兜底，
+                # windowsfilenames 顺带把 : / \ 之类字符换掉，回传到 Windows 也不会出问题
+                opts['outtmpl'] = {'default': str(
+                    DL_DIR / f'%(title).40s [%(id)s]{suffix}.%(ext)s')}
+            else:
+                # 页面里抓到的 CDN 直链（video.twimg.com/.../1080x1920/xxx.mp4）：
+                # 它本身就是一个完整文件，没有 playlist 概念，硬设 playlist_items
+                # 会让 generic 提取器找"第 1 项"而失败
+                opts['noplaylist'] = True
+                # CDN 上的文件名是随机的，用前端带过来的提示名，列表里才认得出是什么
+                if name_hint:
+                    opts['outtmpl'] = {'default': str(
+                        DL_DIR / f'{safe_name(name_hint)}{suffix}.%(ext)s')}
+            opts['windowsfilenames'] = True
         else:
             opts['noplaylist'] = in_playlist(url)
+        if referer:
+            # X 的 CDN 实测不带 Referer 也放行（curl 直接 200），带上更稳
+            opts['http_headers'] = {'Referer': referer}
         if sort:
             opts['format_sort'] = sort
         # 默认用镜像里自带的 ejs（yt-dlp-ejs 0.8.0），比每次去 GitHub 拉快一倍；
@@ -451,8 +552,8 @@ class Engine:
         # 代理：B 站直连（实测 30MB/s，绕代理反而绕出国再回来），其余走 mihomo
         if plat != 'bilibili' and s.get('proxy'):
             opts['proxy'] = s['proxy']
-        # 登录态分平台，各用各的
-        ck = BILI_COOKIE_FILE if plat == 'bilibili' else COOKIE_FILE
+        # 登录态分平台，各用各的（X 单独一份，避免被 YouTube 的定期刷新冲掉）
+        ck = {'bilibili': BILI_COOKIE_FILE, 'twitter': TW_COOKIE_FILE}.get(plat, COOKIE_FILE)
         if ck.exists() and ck.stat().st_size > 200:
             opts['cookiefile'] = str(ck)
         if is_audio:
@@ -511,6 +612,9 @@ class Engine:
             return
         url, quality = row['url'], row['quality']
         all_parts = bool(row['all_parts']) if 'all_parts' in row.keys() else False
+        part_index = int(row['part_index'] or 0) if 'part_index' in row.keys() else 0
+        name_hint = (row['name_hint'] or '') if 'name_hint' in row.keys() else ''
+        referer = (row['referer'] or '') if 'referer' in row.keys() else ''
         plat = platform_of(url)
         s = load_settings()
         free_gb = shutil.disk_usage(DL_DIR).free / 1024 ** 3
@@ -523,7 +627,8 @@ class Engine:
         self.last_log[tid] = '解析视频信息...'
         log(f'#{tid} {plat} {quality} all_parts={all_parts} {url[:70]}')
         try:
-            with YoutubeDL(self._opts(tid, url, quality, all_parts)) as ydl:
+            with YoutubeDL(self._opts(tid, url, quality, all_parts, part_index,
+                                      name_hint, referer)) as ydl:
                 info = ydl.extract_info(url, download=True)
             if tid in self.cancel:
                 raise Canceled('用户取消')
@@ -534,12 +639,21 @@ class Engine:
                 raise RuntimeError('下载结束但没找到输出文件')
             size = path.stat().st_size
             title = (info or {}).get('title') or path.stem
-            # 番剧 ss 地址返回的是整季的 playlist，info['title'] 只有季名（"鬼灭之刃"），
-            # 拼上实际下载那一集的标题才看得懂
-            ents = (info or {}).get('entries') or []
-            e0 = next((e for e in ents if e), None)
-            if e0 and e0.get('title'):
-                title = f'{title} - {e0["title"]}'
+            if plat == 'twitter':
+                # 直链下载时 info['title'] 只是 CDN 的随机文件名，用前端给的提示名
+                if name_hint:
+                    title = safe_name(name_hint)
+                # 多段媒体的每一段标题都是同一句推文正文，拼上去只会重复，
+                # 用段号区分，列表里才看得出先后
+                if part_index:
+                    title = f'{title} · 第 {part_index} 段'
+            else:
+                # 番剧 ss 地址返回的是整季的 playlist，info['title'] 只有季名（"鬼灭之刃"），
+                # 拼上实际下载那一集的标题才看得懂
+                ents = (info or {}).get('entries') or []
+                e0 = next((e for e in ents if e), None)
+                if e0 and e0.get('title'):
+                    title = f'{title} - {e0["title"]}'
             db.update(tid, state='done', pct=100.0, speed=0, eta=0,
                       file=str(path), size=size, total_bytes=size, done_bytes=size,
                       title=title, finished_at=int(time.time()), error='',
@@ -607,6 +721,18 @@ class Engine:
         # 合集展开理论上不会走到这里（提交时就按 P 拆成多条任务了），
         # 万一 yt-dlp 还是返回了 playlist，就取最后落盘的那个文件
         if (info or {}).get('_type') == 'playlist' or (info or {}).get('entries'):
+            # 先看条目自己报的落盘路径：X 的多段媒体就是一个只含 1 条的 playlist，
+            # 按「目录里最新的文件」猜，并行下载时会认成别的任务刚下完的文件
+            for e in (info or {}).get('entries') or []:
+                if not e:
+                    continue
+                p = e.get('filepath')
+                if p and Path(p).exists():
+                    return Path(p)
+                for d in e.get('requested_downloads') or []:
+                    p = d.get('filepath')
+                    if p and Path(p).exists():
+                        return Path(p)
             cands = [p for p in DL_DIR.iterdir()
                      if p.is_file() and p.suffix not in ('.part', '.ytdl')]
             return max(cands, key=lambda p: p.stat().st_mtime) if cands else None
@@ -765,6 +891,11 @@ def snapshot(light: bool = False) -> dict:
             'size': BILI_COOKIE_FILE.stat().st_size if BILI_COOKIE_FILE.exists() else 0,
             'mtime': int(BILI_COOKIE_FILE.stat().st_mtime) if BILI_COOKIE_FILE.exists() else 0,
         },
+        'tw_cookies': {
+            'exists': TW_COOKIE_FILE.exists(),
+            'size': TW_COOKIE_FILE.stat().st_size if TW_COOKIE_FILE.exists() else 0,
+            'mtime': int(TW_COOKIE_FILE.stat().st_mtime) if TW_COOKIE_FILE.exists() else 0,
+        },
         'disk': {'free': du.free, 'total': du.total},
         'cookies': {
             'exists': COOKIE_FILE.exists(),
@@ -875,6 +1006,90 @@ def expand_parts(url: str) -> list[str]:
     return out
 
 
+TW_STATUS_RE = re.compile(r'/status(?:es)?/(\d+)')
+UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+      '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36')
+
+
+# 探测结果里带一句"人话原因"，提交失败时直接回给前端，
+# 不要只回一个空列表让油猴脚本自己猜（那会变成"没有返回任务号"这种鬼话）
+TW_LOCKED = ('这条推文匿名读不到（可能已删除 / 私密账号 / 含敏感内容需登录）；'
+             '要下这类内容，得先在 N100 上传 X 的 cookies')
+TW_NOMEDIA = '这条推文里没有视频（只有文字或纯图片）'
+
+
+def twitter_probe_fast(url: str) -> tuple[int, str]:
+    """快速探测：走 X 的 syndication 接口，约 1-2 秒（yt-dlp 要 4 秒以上）。
+
+    返回 (段数, 原因)，段数含义：
+      >0 = 媒体段数；0 = 确实没有视频；-1 = 没探出来（网络抖动，交给 yt-dlp）；
+      -2 = 接口明确说这条读不到（tombstone：删除/私密/敏感内容）。
+    """
+    m = TW_STATUS_RE.search(url)
+    if not m:
+        return -1, ''      # t.co 短链之类，交给 yt-dlp 去跟跳转
+    s = load_settings()
+    px = s.get('proxy') or ''
+    api = ('https://cdn.syndication.twimg.com/tweet-result?id=%s&lang=en&token=a'
+           % m.group(1))
+    try:
+        op = urllib.request.build_opener(urllib.request.ProxyHandler(
+            {'http': px, 'https': px} if px else {}))
+        req = urllib.request.Request(api, headers={'User-Agent': UA})
+        with op.open(req, timeout=12) as r:
+            data = json.loads(r.read().decode('utf-8', 'replace'))
+    except Exception as e:  # noqa: BLE001
+        log(f'twitter 快速探测失败 {url[:50]}: {str(e)[:100]}')
+        return -1, ''
+    # tombstone = 推文存在但不给匿名看（删了 / 保护 / 敏感内容）。这时 mediaDetails
+    # 也是空的，如果当成"没有视频"就会把用户的正常请求悄悄跳掉。
+    if (not data.get('user')) and (data.get('tombstone') or
+                                   str(data.get('__typename') or '').endswith('Tombstone')):
+        log(f'twitter 推文不可匿名读取 {url[:60]}')
+        return -2, TW_LOCKED
+    media = data.get('mediaDetails') or []
+    vids = [x for x in media if (x.get('type') or '') in ('video', 'animated_gif')]
+    if vids:
+        return len(vids), ''
+    if data.get('video'):
+        return 1, ''
+    return 0, TW_NOMEDIA
+
+
+def twitter_media_count(url: str) -> tuple[int, str]:
+    """用 yt-dlp 再探一遍（慢，约 4 秒）。返回 (段数, 原因)，含义同 twitter_probe_fast。
+
+    0 = 这条推文没有视频；-1 = 没探出来（网络抖动、被风控），调用方按单条处理，
+    让下载阶段去报真实错误，不要因为探测失败就挡住用户提交。
+    """
+    from yt_dlp import YoutubeDL
+    s = load_settings()
+    opts = {
+        'quiet': True, 'no_warnings': True, 'skip_download': True,
+        'noplaylist': False, 'extract_flat': 'in_playlist',
+        'socket_timeout': 20, 'playlistend': MAX_PARTS,
+    }
+    if s.get('proxy'):
+        opts['proxy'] = s['proxy']
+    if TW_COOKIE_FILE.exists() and TW_COOKIE_FILE.stat().st_size > 200:
+        opts['cookiefile'] = str(TW_COOKIE_FILE)
+    try:
+        with YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+    except Exception as e:  # noqa: BLE001
+        low = str(e).lower()
+        if 'no video could be found' in low:
+            return 0, TW_NOMEDIA
+        if not TW_COOKIE_FILE.exists() and any(k in low for k in (
+                'nsfw', 'not authorized', 'age-restricted', 'protected',
+                'authorization', 'failed to parse json')):
+            return -2, TW_LOCKED
+        log(f'twitter 探测失败 {url[:60]}: {str(e)[:120]}')
+        return -1, human_err(str(e))
+    entries = [e for e in ((info or {}).get('entries') or []) if e]
+    return (len(entries) if entries else 1), ''
+
+
 @app.post('/api/tasks')
 def api_add(request: Request, body: dict):
     require_auth(request)
@@ -890,33 +1105,75 @@ def api_add(request: Request, body: dict):
     urls = [u for u in urls if u.startswith(('http://', 'https://'))]
     if not urls:
         raise HTTPException(status_code=400, detail='没有识别到链接')
+    # 前端可以按顺序给每条链接带一个提示（来自油猴脚本抓到的推文信息）：
+    #   [{name: 'NASA - xxx [2122404409292337592]', referer: 'https://x.com/NASA/status/...'}]
+    hints = body.get('hints') if isinstance(body.get('hints'), list) else []
     ids = []
     warnings = []
-    for u in urls:
+    skipped = []
+    for idx, u in enumerate(urls):
+        hint = hints[idx] if idx < len(hints) and isinstance(hints[idx], dict) else {}
+        hint_name = str(hint.get('name') or '')
+        hint_ref = str(hint.get('referer') or '')
         plat = platform_of(u)
-        # 勾了「整个合集」→ 先展开成一条条 P，每个 P 独立成任务
-        targets = [u]
+        # targets 里每项是 (链接, 该链接下的第几段媒体)，0 表示不分段
+        targets = [(u, 0)]
+        # B 站：勾了「整个合集」→ 先展开成一条条 P，每个 P 独立成任务
         if all_parts and plat == 'bilibili':
             try:
                 parts = expand_parts(u)
                 if len(parts) > 1:
-                    targets = parts[:MAX_PARTS]
+                    targets = [(p, 0) for p in parts[:MAX_PARTS]]
                     if len(parts) > MAX_PARTS:
                         warnings.append(f'合集共 {len(parts)} P，只排了前 {MAX_PARTS} P')
             except Exception as e:  # noqa: BLE001
                 warnings.append(f'合集展开失败，按单个视频处理：{str(e)[:80]}')
-        for t in targets:
-            # 同一链接同一画质已下完就不重复排
-            dup = db.find("url=? AND quality=? AND state IN "
-                          "('done','downloading','queued','extracting','merging')", (t, quality))
+        # X：一条推文可能带多段视频/动图，默认全部展开成独立任务。
+        # 现有取回逻辑按单文件记字节区间，一个任务吐多个文件会把删除判定搞乱
+        elif plat == 'twitter' and not is_tw_cdn(u):
+            # CDN 直链（video.twimg.com/.../vid/avc1/1080x1920/xx.mp4）是油猴脚本
+            # 在页面里抓到的真实媒体地址，本身就是一份完整文件，不用探测也不用登录态
+            try:
+                n, why = twitter_probe_fast(u)          # ~1-2 秒
+                # 快速接口不带登录态；库里存了 X cookies 的话，yt-dlp 也许还能读到
+                if n == -2 and TW_COOKIE_FILE.exists() and TW_COOKIE_FILE.stat().st_size > 200:
+                    n = -1
+                if n < 0 and n != -2:
+                    n, why2 = twitter_media_count(u)    # 退回 yt-dlp，~4 秒
+                    why = why2 or why
+            except Exception as e:  # noqa: BLE001
+                n, why = -1, ''
+                warnings.append(f'推文探测失败，按单个视频处理：{str(e)[:80]}')
+            if n == 0:
+                skipped.append({'url': u, 'reason': why or TW_NOMEDIA})
+                continue
+            if n == -2:
+                # 明确读不到：别建必失败的任务，直接把原因回给前端
+                skipped.append({'url': u, 'reason': why or TW_LOCKED})
+                continue
+            if n > 1:
+                cap = min(n, MAX_PARTS)
+                targets = [(u, i) for i in range(1, cap + 1)]
+                if n > cap:
+                    warnings.append(f'这条推文有 {n} 段媒体，只排了前 {cap} 段')
+        for t, pi in targets:
+            # 多段媒体的提示名加段号，否则两段的文件名一模一样，第二个会覆盖/撞名
+            nm = hint_name
+            if nm and len(targets) > 1 and pi:
+                nm = f'{nm}_p{pi}'
+            # 同一链接同一画质同一段已下完就不重复排
+            dup = db.find("url=? AND quality=? AND part_index=? AND state IN "
+                          "('done','downloading','queued','extracting','merging')",
+                          (t, quality, pi))
             # 已取回、正在倒计时删除的旧任务不能复用——文件马上就没了，
             # 前端拿到 id 会去拉一个 404。这种直接建新任务重下一份。
             if dup and not (dup[0]['state'] == 'done' and dup[0]['delete_at']):
                 ids.append({'id': dup[0]['id'], 'dup': True, 'state': dup[0]['state']})
                 continue
-            ids.append({'id': db.add(t, quality, plat, mode=mode), 'dup': False,
-                        'state': 'queued'})
-    return {'ok': True, 'added': ids, 'warnings': warnings}
+            ids.append({'id': db.add(t, quality, plat, mode=mode, part_index=pi,
+                                     name_hint=nm, referer=hint_ref),
+                        'dup': False, 'state': 'queued'})
+    return {'ok': True, 'added': ids, 'warnings': warnings, 'skipped': skipped}
 
 
 @app.post('/api/tasks/{tid}/cancel')
@@ -1146,7 +1403,7 @@ def api_task(tid: int, request: Request):
 @app.post('/api/cookies')
 async def api_cookies(request: Request, file: UploadFile = File(...),
                       target: str = 'youtube'):
-    """上传 Netscape 格式 cookies。target=youtube | bilibili，分开存互不覆盖。"""
+    """上传 Netscape 格式 cookies。target=youtube | bilibili | twitter，分开存互不覆盖。"""
     require_auth(request)
     raw = await file.read()
     txt = raw.decode('utf-8', 'replace')
@@ -1154,6 +1411,12 @@ async def api_cookies(request: Request, file: UploadFile = File(...),
         if 'bilibili' not in txt:
             raise HTTPException(400, '这不像 B 站的 cookies 文件（没有 bilibili 域名记录）')
         dest = BILI_COOKIE_FILE
+    elif target == 'twitter':
+        if not ('x.com' in txt or 'twitter.com' in txt):
+            raise HTTPException(400, '这不像 X 的 cookies 文件（没有 x.com / twitter.com 记录）')
+        if not ('auth_token' in txt or 'ct0' in txt):
+            raise HTTPException(400, '缺 auth_token / ct0：导出时要处于已登录状态')
+        dest = TW_COOKIE_FILE
     else:
         if 'youtube.com' not in txt:
             raise HTTPException(400, '这不像 Netscape 格式的 cookies.txt（没有 youtube.com 记录）')

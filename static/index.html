@@ -30,6 +30,7 @@ h1{font-size:17px;font-weight:500;margin:0}
   margin-right:6px;border:1px solid;vertical-align:1px;font-weight:500}
 .plat.bili{color:#fb7299;border-color:#fb729955;background:#fb729915}
 .plat.yt{color:#f0736f;border-color:#f0736f55;background:#f0736f15}
+.plat.x{color:#e7e9ea;border-color:#e7e9ea44;background:#e7e9ea14}
 .plat.dl{color:#4cc38a;border-color:#4cc38a55;background:#4cc38a15}
 button{font:inherit;cursor:pointer;border-radius:8px;border:1px solid var(--line);
   background:var(--panel);color:var(--txt);padding:6px 12px;transition:border-color .15s,opacity .15s}
@@ -174,6 +175,11 @@ select,input[type=text],input[type=password],input[type=number]{
       <input type="file" id="s-bili-cookie" accept=".txt">
       <span class="hint" id="bili-cookie-info">未上传（匿名也能下 1080P，登录后可下部分限制视频）</span>
     </div>
+    <div class="field">
+      <label>X 登录态 cookies.txt（auth_token）</label>
+      <input type="file" id="s-tw-cookie" accept=".txt">
+      <span class="hint" id="tw-cookie-info">未上传（敏感内容 / 私密账号 / 部分转发推文，匿名读不到，需要登录态）</span>
+    </div>
     <div style="display:flex;gap:8px;margin-top:4px">
       <button class="primary" onclick="saveSettings()">保存</button>
       <button onclick="runDiag()">自检</button>
@@ -297,7 +303,8 @@ function updateRow(el, t){
   const meta = el.querySelector('.meta');
   const badge = `<span class="state ${CLS[t.state]||''}">${st}</span>`;
   const pl = t.platform==='bilibili' ? '<span class="plat bili">B站</span>'
-           : t.platform==='youtube' ? '<span class="plat yt">YouTube</span>' : '';
+           : t.platform==='youtube' ? '<span class="plat yt">YouTube</span>'
+           : t.platform==='twitter' ? '<span class="plat x">X</span>' : '';
   const dl = t.mode==='direct' ? '<span class="plat dl">直下</span>' : '';
   meta.innerHTML = pl + dl + badge + '&nbsp;' + (t.url.length>64? t.url.slice(0,64)+'…' : t.url);
 
@@ -394,6 +401,7 @@ function platOf(u){
   const h = (()=>{ try{ return new URL(u).hostname.toLowerCase(); }catch(e){ return ''; } })();
   if(/(^|\.)(bilibili\.com|bilibili\.tv|b23\.tv|acg\.tv)$/.test(h)) return 'bilibili';
   if(/(^|\.)youtube\.com$/.test(h) || h==='youtu.be') return 'youtube';
+  if(/(^|\.)(x\.com|twitter\.com|t\.co)$/.test(h)) return 'twitter';
   return 'other';
 }
 function pastedUrls(){ return $('#urls').value.split(/\s+/).filter(x=>x.startsWith('http')); }
@@ -411,9 +419,15 @@ function syncQuality(){
   if(!DATA || !DATA.qualities) return;
   const plats = new Set(pastedUrls().map(platOf));
   const onlyBili = plats.size===1 && plats.has('bilibili');
-  const mode = onlyBili ? 'bili' : 'yt';
+  const onlyX = plats.size===1 && plats.has('twitter');
+  const mode = onlyBili ? 'bili' : onlyX ? 'tw' : 'yt';
   if(mode !== _lastQMode){
-    fillQualities(onlyBili ? DATA.bili_qualities : DATA.qualities);
+    // X 只有「最高」和「仅音频」两档有意义：竖屏视频用 height 卡档位会误伤高清，
+    // 后端对 X 一律取最高码率，摆 720/4K 选项只会让人以为下不到是 bug
+    const list = onlyBili ? DATA.bili_qualities
+               : onlyX ? DATA.qualities.filter(q=>q.key==='best'||q.key==='audio')
+               : DATA.qualities;
+    fillQualities(list);
     if(!$('#quality').value) $('#quality').value = 'best';
     _lastQMode = mode;
   }
@@ -433,16 +447,26 @@ async function addTasks(mode='queue'){
     const r = await api('/api/tasks',{method:'POST',headers:{'content-type':'application/json'},
       body:JSON.stringify({urls, quality:$('#quality').value, mode,
                            all_parts: $('#all_parts').checked && !$('#all_parts').disabled})});
-    const dup = r.added.filter(x=>x.dup).length;
+    const added = r.added || [];
+    const skipped = r.skipped || [];
+    const dup = added.filter(x=>x.dup).length;
+    if(!added.length){
+      // 全部被跳过：把服务端给的原因说清楚，别只说"0 个任务"
+      toast(skipped.length ? skipped[0].reason : '没有可下载的内容');
+      skipped.slice(1).forEach(s=>toast(s.reason));
+      if(r.warnings && r.warnings.length) r.warnings.forEach(w=>toast(w));
+      return;
+    }
     if(direct){
       // 已在列表里且早就下完的（重复链接），直接推给浏览器，不用等
-      r.added.filter(x=>x.dup && x.state==='done').forEach(x=>download(x.id));
-      toast(r.added.length > 1
-        ? `直下 ${r.added.length} 个，下完依次存到本机（浏览器可能要你允许多文件下载）`
+      added.filter(x=>x.dup && x.state==='done').forEach(x=>download(x.id));
+      toast(added.length > 1
+        ? `直下 ${added.length} 个，下完依次存到本机（浏览器可能要你允许多文件下载）`
         : `直下 1 个，下完自动存到本机`);
     }else{
-      toast(`已加入 ${r.added.length-dup} 个任务` + (dup? `（${dup} 个重复已跳过）`:''));
+      toast(`已加入 ${added.length-dup} 个任务` + (dup? `（${dup} 个重复已跳过）`:''));
     }
+    if(skipped.length) skipped.forEach(s=>toast(s.reason));
     if(r.warnings && r.warnings.length) r.warnings.forEach(w=>toast(w));
     $('#urls').value = ''; updateCount(); syncQuality();
   }catch(e){ toast(e.message); }
@@ -468,6 +492,10 @@ function openSettings(){
   $('#bili-cookie-info').textContent = cb.exists
     ? `已上传 ${fmtB(cb.size)}，更新于 ${new Date(cb.mtime*1000).toLocaleString()}`
     : '未上传（匿名也能下 1080P，登录后可下部分限制视频）';
+  const ct = DATA.tw_cookies || {};
+  $('#tw-cookie-info').textContent = ct.exists
+    ? `已上传 ${fmtB(ct.size)}，更新于 ${new Date(ct.mtime*1000).toLocaleString()}`
+    : '未上传（敏感内容 / 私密账号，匿名读不到，需要登录态）';
   $('#diag').style.display='none';
   $('#settings').classList.add('show');
 }
@@ -481,6 +509,7 @@ async function saveSettings(){
                 min_free_gb:+$('#s-free').value, delete_grace_sec:+$('#s-grace').value};
   const f = $('#s-cookie').files[0];
   const fb = $('#s-bili-cookie').files[0];
+  const ft = $('#s-tw-cookie').files[0];
   try{
     await api('/api/settings',{method:'POST',headers:{'content-type':'application/json'},
       body:JSON.stringify(body)});
@@ -496,6 +525,12 @@ async function saveSettings(){
       const r = await api('/api/cookies?target=bilibili',{method:'POST',body:fdb});
       msgs.push(`B 站 cookies ${r.lines} 行`);
       $('#s-bili-cookie').value = '';
+    }
+    if(ft){
+      const fdt = new FormData(); fdt.append('file', ft);
+      const r = await api('/api/cookies?target=twitter',{method:'POST',body:fdt});
+      msgs.push(`X cookies ${r.lines} 行`);
+      $('#s-tw-cookie').value = '';
     }
     toast(msgs.length? '已更新：' + msgs.join('，') : '已保存');
   }catch(e){ toast(e.message); }

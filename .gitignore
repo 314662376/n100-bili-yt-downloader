@@ -36,3 +36,6 @@ Thumbs.db
 
 # 只对作者本机有意义的私有脚本（写的是本机导航页的布局）
 _add_nav.py
+
+# 本地联调脚本
+_xcap_test.js
