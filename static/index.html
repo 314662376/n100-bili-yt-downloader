@@ -81,6 +81,17 @@ select,input[type=text],input[type=password],input[type=number]{
 .field{display:flex;flex-direction:column;gap:5px;margin-bottom:12px}
 .field label{font-size:12px;color:var(--dim)}
 .field .hint{font-size:11px}
+details.paste{margin-top:2px}
+details.paste summary{font-size:11px;color:var(--accent);cursor:pointer;list-style:none;
+  width:fit-content;user-select:none}
+details.paste summary::-webkit-details-marker{display:none}
+details.paste summary::before{content:'▸ '}
+details.paste[open] summary::before{content:'▾ '}
+details.paste textarea{min-height:62px;margin-top:6px;font-size:11px;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.hintrow{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.clr{background:none;border:none;padding:0;font-size:11px;color:var(--err);
+  cursor:pointer;text-decoration:underline}
 .kv{font-size:12px;color:var(--dim);white-space:pre-wrap;word-break:break-all;
   background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:9px;margin-top:8px}
 #login{position:fixed;inset:0;background:var(--bg);display:none;align-items:center;
@@ -165,20 +176,42 @@ select,input[type=text],input[type=password],input[type=number]{
       <input type="number" id="s-grace" min="0" max="3600">
       <span class="hint">浏览器把整个文件收完后开始倒计时，期间可点"撤销"</span>
     </div>
+    <div class="hint" style="line-height:1.75;margin:2px 0 12px;padding:9px 11px;
+      background:var(--bg);border:1px solid var(--line);border-radius:9px">
+      登录态得手动搬一次过来 —— N100 读不到你 Chrome 里的 cookie（Chrome 用 Windows
+      账户密钥加密，浏览器开着时数据库还被独占锁住；何况 N100 是另一台机器）。<br>
+      <b>方式一（推荐）</b>：Chrome 装扩展 <b>Get cookies.txt LOCALLY</b> → 打开目标站点并确认已登录 →
+      点扩展的 Export → 上传下面这个 txt。<br>
+      <b>方式二（不想装扩展）</b>：目标站点按 F12 → Network → 点任意一条请求 →
+      在 Request Headers 里找到 <code>Cookie:</code> → 复制整行 → 粘进下面的框。
+      注意别用控制台 <code>document.cookie</code>，那样读不到 HttpOnly 的关键票据。
+    </div>
     <div class="field">
-      <label>YouTube 登录态 cookies.txt</label>
+      <label>YouTube 登录态</label>
       <input type="file" id="s-cookie" accept=".txt">
-      <span class="hint" id="cookie-info">未上传</span>
+      <details class="paste">
+        <summary>没有扩展？直接粘贴 Cookie</summary>
+        <textarea id="s-cookie-text" placeholder="F12 → Network → 点任意请求 → Request Headers → 复制 Cookie: 后面整行"></textarea>
+      </details>
+      <div class="hintrow"><span class="hint" id="cookie-info">未上传</span><button class="clr" id="clr-youtube" style="display:none" onclick="clearCookie('youtube')">清除</button></div>
     </div>
     <div class="field">
-      <label>B 站登录态 cookies.txt（SESSDATA）</label>
+      <label>B 站登录态（SESSDATA）</label>
       <input type="file" id="s-bili-cookie" accept=".txt">
-      <span class="hint" id="bili-cookie-info">未上传（匿名也能下 1080P，登录后可下部分限制视频）</span>
+      <details class="paste">
+        <summary>没有扩展？直接粘贴 Cookie</summary>
+        <textarea id="s-bili-cookie-text" placeholder="同上，在 bilibili.com 页面的请求头里复制 Cookie 整行"></textarea>
+      </details>
+      <div class="hintrow"><span class="hint" id="bili-cookie-info">未上传（匿名也能下 1080P，登录后可下部分限制视频）</span><button class="clr" id="clr-bilibili" style="display:none" onclick="clearCookie('bilibili')">清除</button></div>
     </div>
     <div class="field">
-      <label>X 登录态 cookies.txt（auth_token）</label>
+      <label>X 登录态（auth_token）</label>
       <input type="file" id="s-tw-cookie" accept=".txt">
-      <span class="hint" id="tw-cookie-info">未上传（敏感内容 / 私密账号 / 部分转发推文，匿名读不到，需要登录态）</span>
+      <details class="paste">
+        <summary>没有扩展？直接粘贴 Cookie</summary>
+        <textarea id="s-tw-cookie-text" placeholder="同上，在 x.com 页面的请求头里复制 Cookie 整行（必须含 auth_token）"></textarea>
+      </details>
+      <div class="hintrow"><span class="hint" id="tw-cookie-info">未上传（敏感内容 / 私密账号 / 部分转发推文，匿名读不到，需要登录态）</span><button class="clr" id="clr-twitter" style="display:none" onclick="clearCookie('twitter')">清除</button></div>
     </div>
     <div style="display:flex;gap:8px;margin-top:4px">
       <button class="primary" onclick="saveSettings()">保存</button>
@@ -496,6 +529,10 @@ function openSettings(){
   $('#tw-cookie-info').textContent = ct.exists
     ? `已上传 ${fmtB(ct.size)}，更新于 ${new Date(ct.mtime*1000).toLocaleString()}`
     : '未上传（敏感内容 / 私密账号，匿名读不到，需要登录态）';
+  // 只有真的传过才显示"清除"，省得一排都是没用的按钮
+  $('#clr-youtube').style.display  = c.exists ? '' : 'none';
+  $('#clr-bilibili').style.display = cb.exists ? '' : 'none';
+  $('#clr-twitter').style.display  = ct.exists ? '' : 'none';
   $('#diag').style.display='none';
   $('#settings').classList.add('show');
 }
@@ -504,35 +541,52 @@ document.addEventListener('keydown', e=>{
   if(e.key === 'Escape' && $('#settings').classList.contains('show')) closeSettings();
 });
 
+// 登录态：文件 或 粘贴，二选一（都填了就按粘贴的算，用户刚贴的意图更明确）
+async function pushCookie(target, fileSel, textSel, label){
+  const f = $(fileSel).files[0];
+  const t = $(textSel).value.trim();
+  if(!f && !t) return '';
+  const fd = new FormData();
+  if(t) fd.append('text', t); else fd.append('file', f);
+  const q = target === 'youtube' ? '' : '?target=' + target;
+  const r = await api('/api/cookies'+q, {method:'POST', body:fd});
+  $(fileSel).value = ''; $(textSel).value = '';
+  return `${label} ${r.lines} 条（${r.via === 'paste' ? '粘贴' : '文件'}）`;
+}
+
+async function clearCookie(target){
+  if(!confirm('确定清除这个平台的登录态？清掉之后，需要登录才能看的内容就下不了了。')) return;
+  try{
+    await api('/api/cookies?target='+target, {method:'DELETE'});
+    DATA = await api('/api/state');
+    openSettings();
+    toast('已清除');
+  }catch(e){ toast(e.message); }
+}
+
 async function saveSettings(){
   const body = {proxy:$('#s-proxy').value.trim(), player_client:$('#s-client').value.trim(),
                 min_free_gb:+$('#s-free').value, delete_grace_sec:+$('#s-grace').value};
-  const f = $('#s-cookie').files[0];
-  const fb = $('#s-bili-cookie').files[0];
-  const ft = $('#s-tw-cookie').files[0];
   try{
     await api('/api/settings',{method:'POST',headers:{'content-type':'application/json'},
       body:JSON.stringify(body)});
     const msgs = [];
-    if(f){
-      const fd = new FormData(); fd.append('file', f);
-      const r = await api('/api/cookies',{method:'POST',body:fd});
-      msgs.push(`YouTube cookies ${r.lines} 行`);
-      $('#s-cookie').value = '';
+    // 一个平台失败不要挡住另外两个，各自 catch
+    for(const [tgt, fSel, tSel, label] of [
+      ['youtube',  '#s-cookie',      '#s-cookie-text',      'YouTube'],
+      ['bilibili', '#s-bili-cookie', '#s-bili-cookie-text', 'B 站'],
+      ['twitter',  '#s-tw-cookie',   '#s-tw-cookie-text',   'X'],
+    ]){
+      try{
+        const m = await pushCookie(tgt, fSel, tSel, label);
+        if(m) msgs.push(m);
+      }catch(e){
+        msgs.push(`${label} 失败：${e.message}`);
+      }
     }
-    if(fb){
-      const fdb = new FormData(); fdb.append('file', fb);
-      const r = await api('/api/cookies?target=bilibili',{method:'POST',body:fdb});
-      msgs.push(`B 站 cookies ${r.lines} 行`);
-      $('#s-bili-cookie').value = '';
-    }
-    if(ft){
-      const fdt = new FormData(); fdt.append('file', ft);
-      const r = await api('/api/cookies?target=twitter',{method:'POST',body:fdt});
-      msgs.push(`X cookies ${r.lines} 行`);
-      $('#s-tw-cookie').value = '';
-    }
-    toast(msgs.length? '已更新：' + msgs.join('，') : '已保存');
+    toast(msgs.length? '已更新：' + msgs.join('；') : '已保存');
+    // 重新拉状态，"未上传"才会立刻变成已上传（SSE 只在任务变化时推）
+    try{ DATA = await api('/api/state'); openSettings(); }catch(e){}
   }catch(e){ toast(e.message); }
 }
 

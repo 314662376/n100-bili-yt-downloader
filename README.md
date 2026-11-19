@@ -108,7 +108,7 @@ docker compose down                # 停止（data 不会被删）
 
 ## 油猴脚本（B 站 / YouTube / X 视频页直接下载）
 
-脚本文件：`static/n100-download.user.js`，站点上也能直接下：**`http://192.168.50.2:8300/n100.user.js`**
+脚本文件：`static/n100-download.user.js`，站点上也能直接下：**`http://192.168.1.50:8300/n100.user.js`**
 
 装法：先装 Tampermonkey（或 Violentmonkey）→ 打开上面那个地址 → 油猴会弹安装页 → 安装。
 脚本更新也一样，重开一次地址即可覆盖升级。
@@ -208,17 +208,62 @@ N100 走的是 X 的**匿名**接口，敏感内容 / 私密账号 / 已删除�
 
 ## cookies 更新（大概率会用到）
 
+**N100 读不到你浏览器里的 cookie**，这是浏览器的设计，不是配置问题：
+
+- Chrome 从 v80 起把 cookie 的 `encrypted_value` 用 **DPAPI（绑 Windows 账户）+ AES-GCM** 加密，
+  换台机器、换个用户就解不开
+- Chrome 开着的时候 `Network\Cookies` 这个文件被独占锁住，连复制都可能失败
+- 更根本的是：N100 是另一台 Linux 机器，本来就没有你浏览器的数据
+
+所以只能"从浏览器导出 → 传到 N100"。两种方式，任选：
+
+### 方式一：扩展导出（推荐，一次搞定）
+
+1. Chrome 装扩展 **Get cookies.txt LOCALLY**（开源，纯本地处理，不上传任何数据）
+2. 打开目标站点并确认真的是已登录状态 → 点扩展图标 → Export
+3. N100 网页右上角「设置」→ 选文件 → 保存
+
+### 方式二：F12 复制 Cookie 请求头（什么都不用装）
+
+1. 目标站点按 **F12** → **Network** → 刷新页面 → 点任意一条请求
+2. 在 **Request Headers** 里找到 `Cookie:` 那一行，复制整行（值很长，要复制全）
+3. N100「设置」→ 展开对应平台的「没有扩展？直接粘贴 Cookie」→ 粘贴 → 保存
+
+服务端会自动转成 Netscape 格式（YouTube 写 `.youtube.com` + `.google.com` 两份，
+X 写 `.x.com` + `.twitter.com`），并校验关键票据在不在：
+
+| 平台 | 必须出现（任一个即可） |
+|---|---|
+| YouTube | `SID` / `HSID` / `SSID` / `APISID` / `SAPISID` / `__Secure-*PSID` / `LOGIN_INFO` |
+| B 站 | `SESSDATA` |
+| X | `auth_token` 或 `ct0` |
+
+⚠️ **别用控制台 `document.cookie`** —— HttpOnly 的那几个（正好是最关键的登录票据）JS 读不到，
+粘进去会被服务端直接拒绝。
+
+命令行也能传（注意用 `--form-string`，普通 `-F` 会把值里的 `;` 当参数分隔符）：
+
+```bash
+# 粘贴式
+curl -X POST "http://192.168.1.50:8300/api/cookies?target=twitter" \
+  --form-string "text=auth_token=xxx; ct0=yyy"
+# 文件式
+curl -X POST "http://192.168.1.50:8300/api/cookies?target=youtube" -F "file=@cookies.txt"
+# 清除某个平台
+curl -X DELETE "http://192.168.1.50:8300/api/cookies?target=twitter"
+```
+
+网页上每个平台旁边也有「清除」按钮，换账号时用得上。
+
+也可以绕过网页直接推文件过去：
+
+```bash
+scp -i ~/.ssh/n100_ed25519 edge_cookies.txt root@192.168.1.50:/srv/ytdl/data/cookies.txt
+docker compose restart app
+```
+
 YouTube 会因为"机房 IP + 无登录态"要求验证。当前 `data/cookies.txt` 是从本机 Edge 导出的，
 一般能撑几周到一两个月。失效的表现是任务失败、提示"YouTube 要求验证"。
-
-更新办法，二选一：
-
-- 网页右上角"设置" → 选文件上传 `cookies.txt`
-- 或在 Windows 上导出后推过去：
-  ```bash
-  scp -i ~/.ssh/n100_ed25519 edge_cookies.txt root@192.168.1.50:/srv/ytdl/data/cookies.txt
-  docker compose restart app
-  ```
 
 导出 cookies 的现成文件在本机：`C:\Users\Administrator\.workbuddy\binaries\ytdlp\edge_cookies.txt`
 （超过 24h 的话先跑一次 `ytdl` 命令会自动刷新）。

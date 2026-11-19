@@ -28,11 +28,12 @@ import traceback
 import urllib.request
 from collections import deque
 from pathlib import Path
+from typing import Optional
 from urllib.parse import parse_qs, quote, urlsplit
 
 os.environ.pop('NODE_OPTIONS', None)
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
@@ -1400,31 +1401,172 @@ def api_task(tid: int, request: Request):
     return r
 
 
-@app.post('/api/cookies')
-async def api_cookies(request: Request, file: UploadFile = File(...),
-                      target: str = 'youtube'):
-    """上传 Netscape 格式 cookies。target=youtube | bilibili | twitter，分开存互不覆盖。"""
-    require_auth(request)
-    raw = await file.read()
-    txt = raw.decode('utf-8', 'replace')
+# ─── 登录态（cookies）上传 ─────────────────────────────────────────────
+# 为什么要支持"粘贴"：
+#   Chrome 的 Cookies 数据库（%LOCALAPPDATA%\Google\Chrome\User Data\Default\
+#   Network\Cookies）里 encrypted_value 是 DPAPI + AES-GCM 加密的，密钥绑当前
+#   Windows 账户；而且 Chrome 跑着的时候数据库被独占锁住，复制都复制不出来。
+#   更关键的是 N100 是另一台机器，本来就没有你浏览器的数据。
+#   所以只能"从浏览器里导出"，而不是"让 N100 去读"。
+#   导出有两条路：装扩展存成 txt（最省事），或者 F12 复制 Cookie 请求头粘进来。
+
+COOKIE_MAGIC = (
+    '# Netscape HTTP Cookie File\n'
+    '# https://curl.se/docs/http-cookies.html\n'
+    '# 由 N100 下载站生成\n\n'
+)
+
+# 每个平台要写到哪些域。YouTube 的 SID 系列在 .youtube.com 和 .google.com 上都认，
+# 两边都写一份——只写一边会出现"传了却还是未登录"
+COOKIE_DOMAINS = {
+    'youtube': ('.youtube.com', '.google.com'),
+    'bilibili': ('.bilibili.com',),
+    'twitter': ('.x.com', '.twitter.com'),
+}
+
+# 各平台必须有、且能证明"已登录"的票据。命中任意一个就算数（不同账号/时期会有差异）
+COOKIE_KEYS = {
+    'youtube': ('SID', 'HSID', 'SSID', 'APISID', 'SAPISID',
+                '__Secure-1PSID', '__Secure-3PSID', '__Secure-1PAPISID',
+                '__Secure-3PAPISID', 'LOGIN_INFO'),
+    'bilibili': ('SESSDATA', 'bili_jct', 'DedeUserID'),
+    'twitter': ('auth_token', 'ct0'),
+}
+
+COOKIE_LABEL = {'youtube': 'YouTube', 'bilibili': 'B 站', 'twitter': 'X'}
+
+
+def _parse_cookie_pairs(txt: str) -> list[tuple[str, str]]:
+    """把 "a=1; b=2"（或每行一对）拆成 [(a,1), (b,2)]。
+
+    容忍 F12 里连 `Cookie:` 前缀一起复制、带引号、多行粘贴等手抖情况。
+    """
+    s = re.sub(r'(?im)^\s*cookie\s*:\s*', '', txt)
+    out = []
+    seen = set()
+    for chunk in re.split(r'[;\n\r]+', s):
+        chunk = chunk.strip().strip('"').strip("'")
+        if not chunk or '=' not in chunk:
+            continue
+        k, v = chunk.split('=', 1)
+        k, v = k.strip(), v.strip()
+        if not k or k.startswith('#') or k in seen:
+            continue
+        seen.add(k)
+        out.append((k, v))
+    return out
+
+
+def cookie_text_to_netscape(txt: str, target: str) -> tuple[str, int]:
+    """把浏览器里复制出来的 Cookie 串转成 Netscape 格式，返回 (内容, 条数)。"""
+    raw = txt.replace('\r\n', '\n').replace('\r', '\n').strip()
+    if not raw:
+        raise HTTPException(400, '粘贴的内容是空的')
+
+    # 已经是 Netscape 格式（7 列 tab 分隔）→ 原样规范化，别改动用户导出的文件
+    lines = [ln for ln in raw.split('\n') if ln.strip()]
+    if any(len(ln.split('\t')) >= 7 for ln in lines):
+        head = [ln for ln in lines if ln.startswith('#')]
+        body = [ln.rstrip() for ln in lines if not ln.startswith('#')]
+        if not any('Netscape HTTP Cookie File' in h for h in head):
+            head = COOKIE_MAGIC.strip().split('\n') + head
+        return '\n'.join(head) + '\n\n' + '\n'.join(body) + '\n', len(body)
+
+    pairs = _parse_cookie_pairs(raw)
+    if not pairs:
+        raise HTTPException(
+            400, '没解析出 cookie。格式应该是 name=value; name2=value2 这样')
+
+    have = {k for k, _ in pairs}
+    keys = COOKIE_KEYS.get(target, ())
+    if keys and not any(k in have for k in keys):
+        raise HTTPException(
+            400,
+            '没找到 %s 的登录票据（%s 都没出现）。'
+            '通常是没登录，或者复制的是 document.cookie —— 那样读不到 HttpOnly '
+            '的关键票据，必须从 F12 的 Network → Request Headers 里复制。'
+            % (COOKIE_LABEL.get(target, target), ' / '.join(keys[:3])))
+
+    exp = int(time.time()) + 400 * 86400
+    rows = []
+    for dom in COOKIE_DOMAINS.get(target, ()):
+        for k, v in pairs:
+            # __Host- 开头的按规范不允许带 domain，带上反而会让整份文件被丢弃
+            if k.startswith('__Host-'):
+                continue
+            rows.append('\t'.join([dom, 'TRUE', '/', 'TRUE', str(exp), k, v]))
+    return COOKIE_MAGIC + '\n'.join(rows) + '\n', len(rows)
+
+
+def _cookie_dest_and_check(txt: str, target: str) -> Path:
+    """按平台校验票据并给出落盘路径。文件和粘贴两种来源共用。"""
     if target == 'bilibili':
-        if 'bilibili' not in txt:
-            raise HTTPException(400, '这不像 B 站的 cookies 文件（没有 bilibili 域名记录）')
-        dest = BILI_COOKIE_FILE
-    elif target == 'twitter':
-        if not ('x.com' in txt or 'twitter.com' in txt):
-            raise HTTPException(400, '这不像 X 的 cookies 文件（没有 x.com / twitter.com 记录）')
-        if not ('auth_token' in txt or 'ct0' in txt):
-            raise HTTPException(400, '缺 auth_token / ct0：导出时要处于已登录状态')
-        dest = TW_COOKIE_FILE
+        if 'SESSDATA' not in txt:
+            raise HTTPException(400, '缺 SESSDATA —— 导出/复制时没有处于 B 站登录状态')
+        return BILI_COOKIE_FILE
+    if target == 'twitter':
+        if not ('x.com' in txt or 'twitter.com' in txt
+                or 'auth_token' in txt or 'ct0' in txt):
+            raise HTTPException(400, '这不像 X 的 cookies（没有 x.com / twitter.com 记录）')
+        if 'auth_token' not in txt and 'ct0' not in txt:
+            raise HTTPException(400, '缺 auth_token / ct0 —— 导出时没有处于 X 登录状态')
+        return TW_COOKIE_FILE
+    if 'youtube.com' not in txt and 'SID' not in txt:
+        raise HTTPException(400, '这不像 YouTube 的 cookies（没有 youtube.com 记录，也没有 SID）')
+    return COOKIE_FILE
+
+
+@app.post('/api/cookies')
+async def api_cookies(request: Request,
+                      file: Optional[UploadFile] = File(None),
+                      text: Optional[str] = Form(None),
+                      target: str = 'youtube'):
+    """上传登录态，两种方式二选一（target=youtube | bilibili | twitter，分开存）：
+
+      - file：Netscape 格式的 cookies.txt（浏览器扩展导出）
+      - text：F12 里复制出来的 Cookie 请求头（name=value; name2=value2）
+
+    N100 读不到你浏览器里的 cookie（Chrome 用 DPAPI 加密 + 数据库独占锁，
+    何况 N100 是另一台机器），所以只能这样"搬"过来。
+    """
+    require_auth(request)
+    if target not in COOKIE_DOMAINS:
+        raise HTTPException(400, 'target 只能是 youtube / bilibili / twitter')
+
+    if text and text.strip():
+        txt, n = cookie_text_to_netscape(text, target)
+        dest = _cookie_dest_and_check(txt, target)
+        how = 'paste'
+        data = txt.encode('utf-8')
+    elif file is not None:
+        data = await file.read()
+        txt = data.decode('utf-8', 'replace')
+        if not txt.strip():
+            raise HTTPException(400, '这个文件是空的')
+        dest = _cookie_dest_and_check(txt, target)
+        how = 'file'
+        n = sum(1 for ln in txt.splitlines() if ln.strip() and not ln.startswith('#'))
     else:
-        if 'youtube.com' not in txt:
-            raise HTTPException(400, '这不像 Netscape 格式的 cookies.txt（没有 youtube.com 记录）')
-        dest = COOKIE_FILE
-    n = sum(1 for ln in txt.splitlines() if ln and not ln.startswith('#'))
-    dest.write_bytes(raw)
+        raise HTTPException(400, '要么上传 cookies.txt，要么粘贴 Cookie 字符串')
+
+    dest.write_bytes(data)
     dest.chmod(0o600)
-    return {'ok': True, 'lines': n, 'target': target}
+    log(f'登录态已更新 target={target} via={how} lines={n}')
+    return {'ok': True, 'lines': n, 'target': target, 'via': how}
+
+
+@app.delete('/api/cookies')
+async def api_cookies_clear(request: Request, target: str = 'youtube'):
+    """删掉某个平台的登录态文件（换账号、传错了、想回匿名状态）。"""
+    require_auth(request)
+    dest = {'youtube': COOKIE_FILE, 'bilibili': BILI_COOKIE_FILE,
+            'twitter': TW_COOKIE_FILE}.get(target)
+    if dest is None:
+        raise HTTPException(400, 'target 只能是 youtube / bilibili / twitter')
+    existed = dest.exists()
+    dest.unlink(missing_ok=True)
+    log(f'登录态已清除 target={target} existed={existed}')
+    return {'ok': True, 'target': target, 'cleared': existed}
 
 
 @app.post('/api/settings')
