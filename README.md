@@ -217,6 +217,35 @@ N100 走的是 X 的**匿名**接口，敏感内容 / 私密账号 / 已删除�
 
 所以只能"从浏览器导出 → 传到 N100"。两种方式，任选：
 
+### 方式零：脚本自动读（Windows 本机已登录时最省事）
+
+仓库里带了两个脚本，可以直接从本机 Edge / Chrome 的 cookie 库里把登录态挖出来：
+
+```bash
+# 1. 定位哪个 profile 有登录态，并从卷影副本里把库捞出来（浏览器开着也行）
+python _mirror_ck.py
+
+# 2. 解密，生成 Netscape 文件（把上一步输出的两个路径填进去）
+python _x_cookie.py <库文件> "<Local State>" x_cookies.txt x.com,twitter.com
+
+# 3. 上传
+curl -X POST "http://192.168.1.50:8300/api/cookies?target=twitter" -F "file=@x_cookies.txt"
+
+# 4. 清理卷影副本
+python _mirror_ck.py --cleanup
+```
+
+自己实现的话，这几处一定会撞墙（都是实测踩出来的）：
+
+- 浏览器对 `Network\Cookies` 用的是**独占共享模式**，`robocopy /B`、`shutil.copy2`
+  全部失败（WinError 32）——必须走 VSS 卷影副本
+- `\\?\GLOBALROOT\...` 这种路径**只能用反斜杠**，混一个 `/` 就报 WinError 123
+- `Local State` 是所有 profile 共用的；一次要导多个浏览器时必须**分浏览器存**，
+  否则会拿 Chrome 的密钥去解 Edge 的库，报 `InvalidTag`
+- `v10` 的明文 = **32 字节 SHA256(host_key) + 真实值**（Chromium 130 起加的域名绑定），
+  不剥掉这 32 字节，解出来的值前面全是乱码，上传后必然认证失败
+- `v20` 前缀是 App-Bound Encryption，需要 IElevator COM，普通方式解不开
+
 ### 方式一：扩展导出（推荐，一次搞定）
 
 1. Chrome 装扩展 **Get cookies.txt LOCALLY**（开源，纯本地处理，不上传任何数据）
