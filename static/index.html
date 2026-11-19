@@ -72,6 +72,9 @@ select,input[type=text],input[type=password],input[type=number]{
 .state.err{color:var(--err);border-color:var(--err)}
 .state.warn{color:var(--warn);border-color:var(--warn)}
 .empty{color:var(--hint);font-size:13px;text-align:center;padding:22px 0}
+.listbar{display:none;align-items:center;gap:8px;margin:0 2px 8px}
+.liststat{font-size:12px;color:var(--hint)}
+.listbar button{margin-left:auto}
 .modal{position:fixed;inset:0;background:rgba(0,0,0,.42);display:none;align-items:center;
   justify-content:center;padding:16px;z-index:50}
 .modal.show{display:flex}
@@ -151,6 +154,12 @@ details.paste textarea{min-height:62px;margin-top:6px;font-size:11px;
     加入队列 = 存 N100，之后随时取回（可关机）；直接下到本机 = 优先下载、下完自动收到本机，N100 上收完即删
   </div>
 </section>
+
+<div class="listbar" id="listbar">
+  <span class="liststat" id="liststat"></span>
+  <button class="sm" id="clr-rec" onclick="clearRecords()"
+    title="把已完成 / 失败 / 取消 / 已删除的记录从列表里彻底清掉">清空记录</button>
+</div>
 
 <div class="tasks" id="tasks"><div class="empty">还没有任务</div></div>
 
@@ -240,6 +249,7 @@ const LABEL = {queued:'排队中', extracting:'解析中', downloading:'下载�
                done:'已完成', failed:'失败', canceled:'已取消', removed:'已删除'};
 const CLS = {queued:'', extracting:'run', downloading:'run', merging:'warn',
              done:'done', failed:'err', canceled:'', removed:''};
+const FINISHED = ['done','failed','canceled','removed'];
 
 function fmtB(n){ if(!n) return '0 B';
   const u=['B','KB','MB','GB','TB']; let i=0, v=n;
@@ -297,6 +307,13 @@ function render(d){
     $('#concurrency').value = String(s.concurrency);
   }
   syncQuality();
+
+  // 列表工具条：只统计"已结束"的（排队 / 下载中的不算，清空记录不碰它们）
+  const fin = d.tasks.filter(t=>FINISHED.includes(t.state)).length;
+  $('#listbar').style.display = d.tasks.length ? 'flex' : 'none';
+  $('#liststat').textContent = d.tasks.length
+    ? `共 ${d.tasks.length} 条` + (fin ? ` · 已结束 ${fin} 条` : '') : '';
+  $('#clr-rec').style.display = fin ? '' : 'none';
 
   const box = $('#tasks');
   if(!d.tasks.length){ box.innerHTML = '<div class="empty">还没有任务</div>'; rows.clear(); return; }
@@ -427,6 +444,31 @@ async function act(path, method){
 async function delTask(id){
   if(!confirm('删除 N100 上的任务和文件？（不下载到本地，删了没得恢复）')) return;
   try{ await api(`/api/tasks/${id}`,{method:'DELETE'}); }catch(e){ toast(e.message); }
+}
+
+/* 清空记录：把已结束（完成/失败/取消/已删除）的行从库里真删掉。
+   排队中和正在下载的绝不动；已成品的文件默认连 N100 上的一起删，避免留下孤儿文件。 */
+async function clearRecords(){
+  if(!DATA) return;
+  const fin = DATA.tasks.filter(t=>FINISHED.includes(t.state));
+  if(!fin.length){ toast('没有可清空的记录'); return; }
+  const hold = fin.filter(t=>t.state==='done' && t.file).length;
+  const msg = hold
+    ? `清空 ${fin.length} 条已结束的记录？\n\n其中 ${hold} 条已经下好、还没取回，N100 上的文件会一起删掉`
+      + `（已经存到你本机的文件不受影响）。`
+    : `清空 ${fin.length} 条已结束的记录？\n\n排队中和正在下载的任务不受影响。`;
+  if(!confirm(msg)) return;
+  const btn = $('#clr-rec');
+  btn.disabled = true;
+  try{
+    const r = await api('/api/tasks/clear',{method:'POST',
+      headers:{'content-type':'application/json'}, body:'{}'});
+    toast(r.cleared ? `已清空 ${r.cleared} 条` + (r.freed ? `，释放 ${fmtB(r.freed)}` : '')
+                    : '没有清掉任何记录');
+    if(r.failed && r.failed.length) toast(r.failed[0]);
+    DATA = await api('/api/state'); render(DATA);
+  }catch(e){ toast(e.message); }
+  finally{ btn.disabled = false; }
 }
 
 /* ── 平台识别：决定画质选项和「整个合集」能不能勾 ── */

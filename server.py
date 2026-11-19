@@ -328,6 +328,12 @@ class DB:
             self._con.execute(f'UPDATE tasks SET {cols} WHERE id=?', (*kw.values(), tid))
             self._con.commit()
 
+    def remove(self, tid: int) -> None:
+        """物理删掉一条记录行（不是标 removed，标 removed 还会留在列表里）。"""
+        with self._lock:
+            self._con.execute('DELETE FROM tasks WHERE id=?', (tid,))
+            self._con.commit()
+
     def reset_stale(self) -> int:
         """进程重启：把上次没跑完的弄回队列。"""
         with self._lock:
@@ -1210,6 +1216,54 @@ def api_keep(tid: int, request: Request):
     db.update(tid, delete_at=0, retrieved_at=0)
     clear_coverage(tid)
     return {'ok': True}
+
+
+@app.post('/api/tasks/clear')
+def api_clear(request: Request, body: dict | None = None):
+    """清空已结束的下载记录（done / failed / canceled / removed）。
+
+    默认连 N100 上还没取回的成品文件一起删（否则磁盘上会攒一堆没人认领的孤儿文件）；
+    传 keep_files=true 则只删记录、留文件。排队中和正在跑的任务绝不动。
+
+    body.dry=true 只统计不执行 —— 前端不传，留给手工核一下要删多少。
+    """
+    require_auth(request)
+    body = body or {}
+    keep_files = bool(body.get('keep_files'))
+    dry = bool(body.get('dry'))
+
+    cleared = 0
+    freed = 0
+    kept = 0
+    failed: list[str] = []
+    for row in db.list(limit=100000):
+        if row['state'] == 'queued' or row['state'] in ACTIVE_STATES:
+            continue
+        tid = int(row['id'])
+        p = Path(row['file']) if row['file'] else None
+        if p and p.exists():
+            if keep_files:
+                # 记录删了文件还在 → 磁盘上多一个没人认领的文件，明确算进 kept 让前端提示
+                kept += 1
+            else:
+                try:
+                    size = p.stat().st_size
+                    if not dry:
+                        p.unlink()
+                    freed += size
+                except Exception as e:  # noqa: BLE001
+                    failed.append(f'#{tid} 删文件失败：{e}')
+                    continue
+        cleared += 1
+        if not dry:
+            db.remove(tid)
+            clear_coverage(tid)
+    if not dry:
+        log(f'清空记录：{cleared} 条，释放 {freed} 字节'
+            + (f'，保留 {kept} 个文件' if kept else '')
+            + (f'，{len(failed)} 条失败' if failed else ''))
+    return {'ok': True, 'cleared': cleared, 'freed': freed,
+            'kept': kept, 'failed': failed, 'dry': dry}
 
 
 @app.delete('/api/tasks/{tid}')
