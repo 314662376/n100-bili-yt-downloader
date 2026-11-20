@@ -334,7 +334,17 @@ scp -i ~/.ssh/n100_ed25519 ~/.workbuddy/binaries/ytdlp/bilibili_cookies.txt \
 - **提示"该清晰度不可用"**：源端没有这个分辨率，换"最高画质"重试
 - **磁盘满**：设置里调高"最低剩余"，或删旧文件；`df -h /srv`
 - **代理换了端口**：设置里改"代理"地址，保存即生效，不用重启
-- **player_client 失效**（YouTube 又改策略）：设置里把 `web_embedded` 换成 `tv` 或 `web_embedded,tv`
+- **下载出来的视频全是 640x360**：这是 2026-11 的默认配置踩的坑，两个原因叠在一起：
+  1. `player_client` 旧默认值 `web_embedded` 现在只返回 storyboards（连 360p 都没有），
+     已改成 `visionos,web`；`visionos` 匿名就能拿到 144p→1080p 完整梯子
+  2. YouTube 登录态（`cookies.txt`）带着会让 yt-dlp **跳过 visionos**（它不支持 cookies），
+     退回 web 客户端 —— 而这个账号在 web 上被 SABR 限流，只剩 360p。
+     所以设置里新增「下载时带上 YouTube cookies」，**默认关**；只有遇到要登录/年龄限制的视频才打开，
+     打开后画质会掉到 360p，看完成再关掉
+- **POT 超时 / 只有图片可选**：`ytdl-pot` 容器生成 token 要访问 `www.google.com`，国内必须走 mihomo，
+  而它自己解析不到 `host.docker.internal`。`docker-compose.yml` 里 pot 服务必须保留
+  `extra_hosts: host.docker.internal:host-gateway` + `HTTPS_PROXY`，缺了就是
+  `Error reaching POST /get_pot (TransportError timed out)`
 - **B 站报 412**：限流，降并发等几分钟；**报 -352/-404**：风控/地区限制/需要大会员
 - **B 站下了整季/整个合集**：说明 `playlist_items` 没生效，检查 `server.py` 里 `_opts()` 的 bilibili 分支
 - **JS 挑战解不出**（日志里出现 ejs / nsig 相关报错）：镜像里带的是本地 `yt-dlp-ejs 0.8.0`，比拉远程快一倍；

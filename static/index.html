@@ -173,8 +173,17 @@ details.paste textarea{min-height:62px;margin-top:6px;font-size:11px;
     </div>
     <div class="field">
       <label>player_client（YouTube 客户端标识）</label>
-      <input type="text" id="s-client" placeholder="web_embedded">
-      <span class="hint">默认 web_embedded；失效时可试 tv 或 web_embedded,tv</span>
+      <input type="text" id="s-client" placeholder="visionos">
+      <span class="hint">默认 visionos（拿得到完整 144p→1080p 梯子，匿名也行）。<b>别填 web_embedded</b>：
+        它现在只给 360p，这就是「下了几个视频全是 360p」的原因。可填 visionos,web 做兜底。</span>
+    </div>
+    <div class="field">
+      <label>YouTube 登录态</label>
+      <label class="chk" style="width:fit-content">
+        <input type="checkbox" id="s-yt-ck"> 下载时带上 YouTube cookies
+      </label>
+      <span class="hint">默认关：这个账号带 cookies 时 yt-dlp 会跳过 visionos、退回 web 客户端，
+        结果只能拿到 360p；不带反而能拿到 1080p 以上。只有遇到「要登录 / 年龄限制」的视频才打开。</span>
     </div>
     <div class="field">
       <label>磁盘最低剩余（GB）</label>
@@ -556,7 +565,8 @@ function updateCount(){
 function openSettings(){
   const s = DATA.settings;
   $('#s-proxy').value = s.proxy || '';
-  $('#s-client').value = s.player_client || 'web_embedded';
+  $('#s-client').value = s.player_client || 'visionos,web';
+  $('#s-yt-ck').checked = !!s.yt_cookies;
   $('#s-free').value = s.min_free_gb;
   $('#s-grace').value = s.delete_grace_sec;
   const c = DATA.cookies;
@@ -608,6 +618,7 @@ async function clearCookie(target){
 
 async function saveSettings(){
   const body = {proxy:$('#s-proxy').value.trim(), player_client:$('#s-client').value.trim(),
+                yt_cookies: $('#s-yt-ck').checked,
                 min_free_gb:+$('#s-free').value, delete_grace_sec:+$('#s-grace').value};
   try{
     await api('/api/settings',{method:'POST',headers:{'content-type':'application/json'},

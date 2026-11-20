@@ -31,8 +31,15 @@ services:
     image: brainicism/bgutil-ytdlp-pot-provider:latest
     container_name: ytdl-pot
     restart: unless-stopped
+    # POT 生成 token 要访问 www.google.com 取 BotGuard 脚本，国内必须走 mihomo，
+    # 而它自己在这个容器里解析不到 host.docker.internal —— 少了这行，
+    # /get_pot 会一直超时，表现就是「YouTube 只能下 360p 甚至只有图片」
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       TZ: Asia/Shanghai
+      HTTPS_PROXY: http://host.docker.internal:7890
+      HTTP_PROXY: http://host.docker.internal:7890
     logging:
       driver: json-file
       options:

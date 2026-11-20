@@ -6,7 +6,8 @@
   - SSE 推给网页，Range 流式下载给浏览器，全量发完即标记"已取回"并定时删文件
 
 坑位（与单机版 exe 同源，改动前先读）：
-  1. player_client 默认 web_embedded，这是绕过该账号 SABR-only 实验的唯一可用值
+  1. player_client 默认 visionos。web_embedded 现在只返回 360p（2026-11 实测，
+     连 storyboard 之外都没有），用它下载出来永远是 640x360
   2. 格式排序必须用 res（短边），否则竖屏 1080x1920 会掉到 480p
   3. 机器房 IP 出口必须带 cookies + PO token，否则 YouTube 判机器人
   4. NODE_OPTIONS 必须清掉，否则 node 带 preload 起不来、n 签名解不出
@@ -56,7 +57,8 @@ for d in (DATA_DIR, DL_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
 QUALITY = {
-    'best': ('最高画质（≤1080p）', 1080, ''),
+    # best 不设高度上限：YouTube 现在 1080/1440/2160 都可能给，卡 1080 等于白浪费
+    'best': ('最高画质（不设上限）', 0, ''),
     '4k': ('4K（2160p）', 2160, '_4K'),
     '720': ('720p', 720, '_720p'),
     'audio': ('仅音频（MP3）', 0, '_audio'),
@@ -144,7 +146,13 @@ DEFAULTS = {
     'concurrency': 1,
     'proxy': DEFAULT_PROXY,
     'quality': 'best',
-    'player_client': 'web_embedded',
+    # web_embedded 现在只吐 360p（实测 2026-11 起连 storyboard 以外都没有），
+    # yt-dlp 2026.08 的默认客户端是 visionos + web，实测 visionos 能拿到完整
+    # 144p→1080p 梯子且不需要登录态，所以默认改用它
+    'player_client': 'visionos,web',
+    # YouTube 登录态默认不传：这个账号被 SABR 限流，带上 cookies 只能拿到 360p，
+    # 不带反而走 visionos 匿名拿到完整梯子。真遇到要登录的视频再在设置里打开。
+    'yt_cookies': False,
     'min_free_gb': 8,
     'delete_grace_sec': 60,
 }
@@ -181,8 +189,10 @@ def save_settings(patch: dict) -> dict:
         if 'proxy' in patch:
             s['proxy'] = str(patch['proxy'] or '').strip()
         if 'player_client' in patch:
-            pc = str(patch['player_client'] or 'web_embedded').strip()
-            s['player_client'] = pc or 'web_embedded'
+            pc = str(patch['player_client'] or 'visionos,web').strip()
+            s['player_client'] = pc or 'visionos,web'
+        if 'yt_cookies' in patch:
+            s['yt_cookies'] = bool(patch['yt_cookies'])
         if 'min_free_gb' in patch:
             s['min_free_gb'] = max(1, min(200, int(patch['min_free_gb'])))
         SETTINGS_FILE.write_text(json.dumps(s, ensure_ascii=False, indent=2), 'utf-8')
@@ -486,10 +496,12 @@ class Engine:
             fmt = f'bv*[height<={height}]+ba/b[height<={height}]/b'
             sort = [f'res:{height}', 'vcodec:avc1', 'acodec:m4a']
         else:
+            # height=0 表示「不设上限」（best），此时不能塞 res:0 进排序，
+            # 否则 yt-dlp 会把所有分辨率都判成 0 分，最后挑中谁全看运气
             fmt = 'bv*+ba/b'
-            sort = [f'res:{height}', 'vcodec:avc1', 'acodec:m4a']
+            sort = ([f'res:{height}'] if height else []) + ['vcodec:avc1', 'acodec:m4a']
 
-        clients = [c.strip() for c in str(s['player_client']).split(',') if c.strip()] or ['web_embedded']
+        clients = [c.strip() for c in str(s['player_client']).split(',') if c.strip()] or ['visionos']
         opts: dict = {
             'quiet': True,
             'noprogress': True,
@@ -561,7 +573,12 @@ class Engine:
             opts['proxy'] = s['proxy']
         # 登录态分平台，各用各的（X 单独一份，避免被 YouTube 的定期刷新冲掉）
         ck = {'bilibili': BILI_COOKIE_FILE, 'twitter': TW_COOKIE_FILE}.get(plat, COOKIE_FILE)
-        if ck.exists() and ck.stat().st_size > 200:
+        use_ck = ck.exists() and ck.stat().st_size > 200
+        if plat == 'youtube' and not s.get('yt_cookies'):
+            # 带 cookies 时 yt-dlp 会跳过 visionos（它不支持 cookies），退回 web 客户端，
+            # 而 web 在这个账号上只能拿到 360p —— 所以默认不带
+            use_ck = False
+        if use_ck:
             opts['cookiefile'] = str(ck)
         if is_audio:
             opts['postprocessors'] = [{
@@ -885,8 +902,8 @@ def snapshot(light: bool = False) -> dict:
     return {
         'now': now,
         'tasks': rows,
-        'settings': {k: s[k] for k in ('concurrency', 'quality', 'proxy',
-                                       'player_client', 'min_free_gb', 'delete_grace_sec')},
+        'settings': {k: s[k] for k in ('concurrency', 'quality', 'proxy', 'player_client',
+                                       'yt_cookies', 'min_free_gb', 'delete_grace_sec')},
         'qualities': [{'key': k, 'label': v[0]} for k, v in QUALITY.items()],
         'bili_qualities': [
             {'key': 'best', 'label': '最高（1080P，不含大会员）'},
